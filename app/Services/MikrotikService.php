@@ -1,391 +1,241 @@
 <?php
 namespace App\Services;
-
+use App\Models\Nas;
 use App\Models\Router;
-use App\Models\MikrotikCache;
-use App\Models\RadiusSession;
-use App\Models\IspClient;
+use App\Models\SystemSetting;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Http;
 
-class MikrotikService
-{
-    private Router $router;
-    private $socket = null;
-    private bool $connected = false;
+class MikrotikService {
+    private ?object $nas;
+    private ?object $router;
+    private string $ip;
+    private int    $port;
+    private string $user;
+    private string $pass;
+    private bool   $useOvpn;
+    private string $ovpnGateway;
+    private $api = null;
 
-    public function __construct(Router $router)
-    {
-        $this->router = $router;
+    public function __construct($nasOrRouter = null) {
+        if ($nasOrRouter instanceof Router) {
+            $this->router  = $nasOrRouter;
+            $this->nas     = null;
+            $this->ip      = $nasOrRouter->ip_address;
+            $this->port    = (int)($nasOrRouter->api_port ?? 8728);
+            $this->user    = $nasOrRouter->api_username ?? 'admin';
+            $this->pass    = $nasOrRouter->api_password ?? '';
+            $this->useOvpn = (bool)($nasOrRouter->use_ovpn ?? false);
+            $this->ovpnGateway = $nasOrRouter->ovpn_gateway ?? '';
+        } elseif ($nasOrRouter instanceof Nas) {
+            $this->nas     = $nasOrRouter;
+            $this->router  = null;
+            $this->ip      = $nasOrRouter->nasname;
+            $this->port    = 8728;
+            $this->user    = $nasOrRouter->api_username ?? 'admin';
+            $this->pass    = $nasOrRouter->api_password ?? '';
+            $this->useOvpn = (bool)($nasOrRouter->use_ovpn ?? false);
+            $this->ovpnGateway = $nasOrRouter->ovpn_gateway ?? '';
+        } else {
+            $this->ip   = '';
+            $this->port = 8728;
+            $this->user = 'admin';
+            $this->pass = '';
+            $this->useOvpn = false;
+            $this->ovpnGateway = '';
+        }
     }
 
-    // ─── Low-level RouterOS API ───────────────────────────────────────────
+    /**
+     * Determine the effective IP to connect to.
+     * If OpenVPN is enabled, we connect via the OVPN tunnel gateway IP
+     * (the private IP assigned to this router's OVPN client).
+     */
+    private function effectiveIp(): string {
+        if ($this->useOvpn && $this->ovpnGateway) {
+            return $this->ovpnGateway; // e.g. 10.8.0.x — tunnel IP
+        }
+        return $this->ip;
+    }
 
-    public function connect(): bool
-    {
+    /**
+     * Connect to MikroTik RouterOS API
+     */
+    private function connect(): bool {
+        if ($this->api) return true;
+        $ip   = $this->effectiveIp();
+        $port = $this->port;
+        if (!$ip) return false;
         try {
-            $this->socket = @fsockopen(
-                $this->router->ip_address,
-                $this->router->api_port ?? 8728,
-                $errno, $errstr, 5
-            );
-            if (!$this->socket) {
-                Log::warning("MikroTik connect failed: {$this->router->ip_address} — $errstr");
+            // Attempt TCP connection to RouterOS API port
+            $sock = @fsockopen($ip, $port, $errno, $errstr, 5);
+            if (!$sock) {
+                Log::warning("[MikroTik] Cannot connect to {$ip}:{$port} — {$errstr}");
                 return false;
             }
-            stream_set_timeout($this->socket, 8);
-            $this->connected = true;
-            return $this->login($this->router->username, $this->router->password);
+            // Simple RouterOS API login sequence
+            $this->api = $sock;
+            $this->apiLogin();
+            return true;
         } catch (\Exception $e) {
-            Log::error('MikroTik connect exception: ' . $e->getMessage());
+            Log::error('[MikroTik] Connect error: '.$e->getMessage());
             return false;
         }
     }
 
-    public function disconnect(): void
-    {
-        if ($this->socket) {
-            fclose($this->socket);
-            $this->socket = null;
-            $this->connected = false;
-        }
-    }
-
-    private function login(string $user, string $pass): bool
-    {
-        $response = $this->communicate(['/login', '=name=' . $user, '=password=' . $pass]);
-        if (isset($response[0]) && $response[0] === '!done') return true;
-        // MD5 challenge login (RouterOS < 6.43)
-        if (isset($response[0]) && $response[0] === '!done' && isset($response[1])) {
-            preg_match('/ret=([0-9a-f]+)/', implode('', $response), $m);
-            if ($m) {
-                $hash = md5(chr(0) . $pass . pack('H*', $m[1]));
-                $r2 = $this->communicate(['/login', '=name=' . $user, '=response=00' . $hash]);
-                return isset($r2[0]) && $r2[0] === '!done';
-            }
-        }
-        return isset($response[0]) && $response[0] === '!done';
-    }
-
-    private function writeWord(string $word): void
-    {
-        $len = strlen($word);
-        if ($len < 0x80) fwrite($this->socket, chr($len));
-        elseif ($len < 0x4000) fwrite($this->socket, chr(($len >> 8) | 0x80) . chr($len & 0xff));
-        else fwrite($this->socket, chr(($len >> 16) | 0xc0) . chr(($len >> 8) & 0xff) . chr($len & 0xff));
-        fwrite($this->socket, $word);
-    }
-
-    private function readWord(): string
-    {
-        $byte = ord(fread($this->socket, 1));
-        if ($byte & 0x80) {
-            if (($byte & 0xc0) === 0x80) {
-                $len = (($byte & 0x3f) << 8) | ord(fread($this->socket, 1));
-            } else {
-                $len = (($byte & 0x3f) << 16) | (ord(fread($this->socket, 1)) << 8) | ord(fread($this->socket, 1));
-            }
-        } else {
-            $len = $byte;
-        }
-        if ($len === 0) return '';
-        $word = '';
-        while (strlen($word) < $len) {
-            $word .= fread($this->socket, $len - strlen($word));
-        }
-        return $word;
-    }
-
-    public function communicate(array $words): array
-    {
-        if (!$this->socket) return ['!fatal', 'Not connected'];
-        foreach ($words as $word) $this->writeWord($word);
-        $this->writeWord('');
-        $response = [];
-        while (true) {
-            $word = $this->readWord();
-            if ($word === '') continue;
-            $response[] = $word;
-            if ($word === '!done' || $word === '!fatal' || $word === '!trap') {
-                // Read remaining words in this reply
-                while (($w = $this->readWord()) !== '') $response[] = $w;
-                break;
-            }
-        }
-        return $response;
-    }
-
-    private function apiQuery(array $command): array
-    {
-        if (!$this->connected && !$this->connect()) return [];
-        $raw = $this->communicate($command);
-        return $this->parseResponse($raw);
-    }
-
-    private function parseResponse(array $raw): array
-    {
-        $result = [];
-        $current = [];
-        foreach ($raw as $word) {
-            if ($word === '!re') {
-                if ($current) $result[] = $current;
-                $current = [];
-            } elseif ($word === '!done') {
-                if ($current) $result[] = $current;
-                break;
-            } elseif (str_starts_with($word, '=')) {
-                $parts = explode('=', ltrim($word, '='), 2);
-                $current[$parts[0]] = $parts[1] ?? '';
-            }
-        }
-        return $result;
-    }
-
-    // ─── Cached Data Fetcher ──────────────────────────────────────────────
-
-    private function cached(string $type, array $command, int $ttlMinutes = 2): array
-    {
-        $cache = MikrotikCache::firstOrNew(['router_id' => $this->router->id, 'data_type' => $type]);
-        if (!$cache->exists || $cache->isStale($ttlMinutes)) {
-            $data = $this->apiQuery($command);
-            $cache->fill(['data' => json_encode($data), 'cached_at' => now()])->save();
-            return $data;
-        }
-        return $cache->data_array;
-    }
-
-    // ─── Public API Methods ───────────────────────────────────────────────
-
-    public function getResources(): array
-    {
-        $r = $this->apiQuery(['/system/resource/print']);
-        return $r[0] ?? [];
-    }
-
-    public function getIdentity(): array
-    {
-        $r = $this->apiQuery(['/system/identity/print']);
-        return $r[0] ?? [];
-    }
-
-    public function getInterfaces(): array
-    {
-        return $this->cached('interfaces', ['/interface/print'], 1);
-    }
-
-    public function getIpAddresses(): array
-    {
-        return $this->cached('ip_addresses', ['/ip/address/print'], 1);
-    }
-
-    public function getRoutes(): array
-    {
-        return $this->cached('routes', ['/ip/route/print'], 3);
-    }
-
-    public function getIpPools(): array
-    {
-        return $this->cached('ip_pools', ['/ip/pool/print'], 5);
-    }
-
-    public function getPppoeActive(): array
-    {
-        return $this->apiQuery(['/ppp/active/print']); // Always live
-    }
-
-    public function getHotspotActive(): array
-    {
-        return $this->apiQuery(['/ip/hotspot/active/print']); // Always live
-    }
-
-    public function getPppoeProfiles(): array
-    {
-        return $this->cached('pppoe_profiles', ['/ppp/profile/print'], 10);
-    }
-
-    public function getHotspotProfiles(): array
-    {
-        return $this->cached('hotspot_profiles', ['/ip/hotspot/profile/print'], 10);
-    }
-
-    public function getHotspotUsers(): array
-    {
-        return $this->cached('hotspot_users', ['/ip/hotspot/user/print'], 5);
-    }
-
-    public function getPppoeSecrets(): array
-    {
-        return $this->cached('pppoe_secrets', ['/ppp/secret/print'], 5);
-    }
-
-    public function getFirewallFilter(): array
-    {
-        return $this->cached('firewall_filter', ['/ip/firewall/filter/print'], 10);
-    }
-
-    public function getFirewallNat(): array
-    {
-        return $this->cached('firewall_nat', ['/ip/firewall/nat/print'], 10);
-    }
-
-    public function getFirewallMangle(): array
-    {
-        return $this->cached('firewall_mangle', ['/ip/firewall/mangle/print'], 10);
-    }
-
-    public function getQueueSimple(): array
-    {
-        return $this->cached('queue_simple', ['/queue/simple/print'], 5);
-    }
-
-    public function getQueueTree(): array
-    {
-        return $this->cached('queue_tree', ['/queue/tree/print'], 5);
-    }
-
-    public function getRadiusServers(): array
-    {
-        return $this->cached('radius_servers', ['/radius/print'], 10);
-    }
-
-    public function getArpTable(): array
-    {
-        return $this->apiQuery(['/ip/arp/print']);
-    }
-
-    public function getDhcpLeases(): array
-    {
-        return $this->apiQuery(['/ip/dhcp-server/lease/print']);
-    }
-
-    public function getBridges(): array
-    {
-        return $this->cached('bridges', ['/interface/bridge/print'], 10);
-    }
-
-    public function getWireless(): array
-    {
-        return $this->cached('wireless', ['/interface/wireless/print'], 5);
-    }
-
-    public function getWirelessRegistrations(): array
-    {
-        return $this->apiQuery(['/interface/wireless/registration-table/print']);
-    }
-
-    public function getLogs(int $limit = 50): array
-    {
-        return $this->apiQuery(['/log/print', '=count-only=']);
-    }
-
-    // ─── Write Operations ─────────────────────────────────────────────────
-
-    public function addPppoeSecret(string $name, string $password, string $profile = 'default', string $service = 'pppoe'): bool
-    {
-        $r = $this->communicate(['/ppp/secret/add', '=name=' . $name, '=password=' . $password, '=profile=' . $profile, '=service=' . $service]);
-        return in_array('!done', $r);
-    }
-
-    public function removePppoeSecret(string $name): bool
-    {
-        // Find .id first
-        $secrets = $this->apiQuery(['/ppp/secret/print', '?name=' . $name]);
-        if (empty($secrets)) return false;
-        $r = $this->communicate(['/ppp/secret/remove', '=.id=' . $secrets[0]['.id']]);
-        return in_array('!done', $r);
-    }
-
-    public function disconnectPppoeUser(string $name): bool
-    {
-        $active = $this->apiQuery(['/ppp/active/print', '?name=' . $name]);
-        if (empty($active)) return false;
-        $r = $this->communicate(['/ppp/active/remove', '=.id=' . $active[0]['.id']]);
-        return in_array('!done', $r);
-    }
-
-    public function addHotspotUser(string $name, string $password, string $profile = 'default'): bool
-    {
-        $r = $this->communicate(['/ip/hotspot/user/add', '=name=' . $name, '=password=' . $password, '=profile=' . $profile]);
-        return in_array('!done', $r);
-    }
-
-    public function disconnectHotspotUser(string $name): bool
-    {
-        $active = $this->apiQuery(['/ip/hotspot/active/print', '?user=' . $name]);
-        if (empty($active)) return false;
-        $r = $this->communicate(['/ip/hotspot/active/remove', '=.id=' . $active[0]['.id']]);
-        return in_array('!done', $r);
-    }
-
-    public function addQueue(string $name, string $target, string $maxLimit, string $burstLimit = ''): bool
-    {
-        $cmd = ['/queue/simple/add', '=name=' . $name, '=target=' . $target, '=max-limit=' . $maxLimit];
-        if ($burstLimit) $cmd[] = '=burst-limit=' . $burstLimit;
-        return in_array('!done', $this->communicate($cmd));
-    }
-
-    public function reboot(): bool
-    {
-        $r = $this->communicate(['/system/reboot']);
-        return in_array('!done', $r);
-    }
-
-    public function setRadiusConfig(string $nasIp, string $secret, string $authPort = '1812', string $acctPort = '1813'): bool
-    {
-        // Add RADIUS server on MikroTik pointing back to this system
-        $r = $this->communicate([
-            '/radius/add',
-            '=service=ppp,hotspot',
-            '=address=' . $nasIp,
-            '=secret=' . $secret,
-            '=authentication-port=' . $authPort,
-            '=accounting-port=' . $acctPort,
+    private function apiLogin(): void {
+        $this->apiWrite([
+            '/login',
+            '=name='.$this->user,
+            '=password='.$this->pass,
         ]);
-        return in_array('!done', $r);
+        $this->apiRead();
     }
 
-    // ─── RADIUS Sync ──────────────────────────────────────────────────────
-
-    public function syncRadiusUsers(): array
-    {
-        $clients = IspClient::with('plan')
-            ->where('status', 'active')
-            ->where('router_id', $this->router->id)
-            ->get();
-
-        $synced = 0;
-        $failed = 0;
-
-        foreach ($clients as $client) {
-            $password = $client->plain_password ?? 'changeme';
-            $profile  = $client->plan->profile_name ?? 'default';
-
-            if ($client->connection_type === 'pppoe') {
-                $ok = $this->addPppoeSecret($client->username, $password, $profile);
-            } elseif ($client->connection_type === 'hotspot') {
-                $ok = $this->addHotspotUser($client->username, $password, $profile);
+    private function apiWrite(array $sentence): void {
+        if (!$this->api) return;
+        foreach ($sentence as $word) {
+            $len  = strlen($word);
+            $lenB = '';
+            if ($len < 0x80) {
+                $lenB = chr($len);
+            } elseif ($len < 0x4000) {
+                $len  |= 0x8000;
+                $lenB  = chr(($len >> 8) & 0xFF).chr($len & 0xFF);
             } else {
-                $ok = true;
+                $len  |= 0xC00000;
+                $lenB  = chr(($len >> 16) & 0xFF).chr(($len >> 8) & 0xFF).chr($len & 0xFF);
             }
-
-            $ok ? $synced++ : $failed++;
+            fwrite($this->api, $lenB.$word);
         }
-
-        return ['synced' => $synced, 'failed' => $failed, 'total' => $clients->count()];
+        fwrite($this->api, chr(0)); // end of sentence
     }
 
-    // ─── Helper ───────────────────────────────────────────────────────────
-
-    public static function formatBytes(int $bytes): string
-    {
-        if ($bytes >= 1073741824) return round($bytes / 1073741824, 2) . ' GB';
-        if ($bytes >= 1048576)    return round($bytes / 1048576, 2) . ' MB';
-        if ($bytes >= 1024)       return round($bytes / 1024, 2) . ' KB';
-        return $bytes . ' B';
+    private function apiRead(): array {
+        if (!$this->api) return [];
+        $r = [];
+        while (true) {
+            $lenB = ord(fread($this->api, 1));
+            if ($lenB & 0x80) {
+                if ($lenB & 0x40) {
+                    $lenB  = ($lenB & 0x3F) << 16;
+                    $lenB |= ord(fread($this->api,1)) << 8;
+                    $lenB |= ord(fread($this->api,1));
+                } else {
+                    $lenB  = ($lenB & 0x7F) << 8;
+                    $lenB |= ord(fread($this->api,1));
+                }
+            }
+            if ($lenB == 0) break;
+            $w = '';
+            while (strlen($w) < $lenB) $w .= fread($this->api, $lenB - strlen($w));
+            $r[] = $w;
+        }
+        return $r;
     }
 
-    public static function uptimeHuman(string $uptime): string
-    {
-        // e.g. "10d2h35m12s" → human readable
-        return str_replace(['d','h','m','s'], ['d ', 'h ', 'm ', 's'], $uptime);
+    public function query(array $command): array {
+        if (!$this->connect()) return [];
+        try {
+            $this->apiWrite($command);
+            $raw  = $this->apiRead();
+            $rows = [];
+            $row  = [];
+            foreach ($raw as $word) {
+                if (strpos($word,'!re') === 0) {
+                    if ($row) { $rows[] = $row; $row = []; }
+                } elseif (strpos($word,'=') === 0) {
+                    [$k,$v]   = explode('=', substr($word,1), 2) + ['',''];
+                    $row[$k]  = $v;
+                } elseif (strpos($word,'!done') === 0) {
+                    if ($row) $rows[] = $row;
+                    break;
+                }
+            }
+            return $rows;
+        } catch (\Exception $e) {
+            Log::error('[MikroTik] Query error: '.$e->getMessage());
+            return [];
+        }
+    }
+
+    public function disconnectUser(string $username): bool {
+        $sessions = $this->query(['/ppp/active/print','?name='.$username]);
+        foreach ($sessions as $s) {
+            if (isset($s['.id'])) {
+                $this->query(['/ppp/active/remove','=.id='.$s['.id']]);
+            }
+        }
+        return true;
+    }
+
+    public function getActiveConnections(): array  { return $this->query(['/ppp/active/print']); }
+    public function getPppoeSecrets(): array        { return $this->query(['/ppp/secret/print']); }
+    public function getInterfaces(): array          { return $this->query(['/interface/print']); }
+    public function getQueues(): array              { return $this->query(['/queue/simple/print']); }
+    public function getDhcpLeases(): array          { return $this->query(['/ip/dhcp-server/lease/print']); }
+    public function getWireless(): array            { return $this->query(['/interface/wireless/print']); }
+    public function getFirewallRules(): array       { return $this->query(['/ip/firewall/filter/print']); }
+    public function getRoutes(): array              { return $this->query(['/ip/route/print']); }
+    public function getIpPools(): array             { return $this->query(['/ip/pool/print']); }
+    public function getHotspotUsers(): array        { return $this->query(['/ip/hotspot/user/print']); }
+    public function getHotspotActive(): array       { return $this->query(['/ip/hotspot/active/print']); }
+    public function getSystemResource(): array      { $r=$this->query(['/system/resource/print']); return $r[0]??[]; }
+    public function getRadiusConfig(): array        { $r=$this->query(['/radius/print']); return $r[0]??[]; }
+    public function getOpenVpnInterfaces(): array   { return $this->query(['/interface/ovpn-client/print']); }
+
+    public function addPppoeSecret(string $user, string $pass, string $profile='default', string $ip=''): bool {
+        $cmd = ['/ppp/secret/add','=name='.$user,'=password='.$pass,'=service=pppoe','=profile='.$profile];
+        if ($ip) $cmd[] = '=remote-address='.$ip;
+        $this->query($cmd);
+        return true;
+    }
+
+    public function removePppoeSecret(string $user): bool {
+        $secrets = $this->query(['/ppp/secret/print','?name='.$user]);
+        foreach ($secrets as $s) {
+            if (isset($s['.id'])) $this->query(['/ppp/secret/remove','=.id='.$s['.id']]);
+        }
+        return true;
+    }
+
+    public function disconnectHotspot(string $mac): bool {
+        $active = $this->query(['/ip/hotspot/active/print','?mac-address='.$mac]);
+        foreach ($active as $a) {
+            if (isset($a['.id'])) $this->query(['/ip/hotspot/active/remove','=.id='.$a['.id']]);
+        }
+        return true;
+    }
+
+    public function pushRadiusConfig(array $config): bool {
+        $this->query(['/radius/set','=0','=address='.$config['address'],'=secret='.$config['secret'],'=service=ppp,hotspot','=authentication-port='.$config['auth_port'],'=accounting-port='.$config['acct_port']]);
+        return true;
+    }
+
+    public function testConnection(): bool {
+        try {
+            $r = $this->getSystemResource();
+            return !empty($r);
+        } catch (\Exception $e) {
+            return false;
+        }
+    }
+
+    /**
+     * Generate OpenVPN client config (.ovpn) for a MikroTik router.
+     * This file is downloaded and imported into MikroTik via /certificate import
+     * or added manually as an OVPN client interface.
+     */
+    public function generateOvpnConfig(Router $router): string {
+        $serverIp   = SystemSetting::get('ovpn','server_ip','');
+        $serverPort = SystemSetting::get('ovpn','server_port','1194');
+        $proto      = SystemSetting::get('ovpn','protocol','tcp');
+        $ca         = SystemSetting::get('ovpn','ca_cert','');
+        $certBlock  = $ca ? "<ca>\n{$ca}\n</ca>" : '# Paste CA cert here';
+        return "client\ndev tun\nproto {$proto}\nremote {$serverIp} {$serverPort}\nresolv-retry infinite\nnobind\npersist-key\npersist-tun\n{$certBlock}\nverb 3\n# Router: {$router->name}\n# Connect on MikroTik: /interface ovpn-client add name=ovpn-isp connect-to={$serverIp} port={$serverPort} user={$router->ovpn_username} password={$router->ovpn_password}\n";
+    }
+
+    public function __destruct() {
+        if ($this->api && is_resource($this->api)) @fclose($this->api);
     }
 }

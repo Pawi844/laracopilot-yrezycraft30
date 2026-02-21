@@ -5,17 +5,16 @@
 @section('content')
 @php
 $icons = ['general'=>'fa-building','mpesa'=>'fa-mobile-alt','sms'=>'fa-sms','whatsapp'=>'fa-comment','mail'=>'fa-envelope','billing'=>'fa-file-invoice'];
-$colors = ['general'=>'#2563eb','mpesa'=>'#16a34a','sms'=>'#0284c7','whatsapp'=>'#16a34a','mail'=>'#7c3aed','billing'=>'#ea580c'];
-$selects = [
+$selectOptions = [
     'type'        => ['paybill'=>'Paybill','till'=>'Till Number'],
     'environment' => ['sandbox'=>'Sandbox (Testing)','production'=>'Production (Live)'],
-    'gateway'     => [
-        'sms'       => ['africastalking'=>"Africa's Talking",'twilio'=>'Twilio','vonage'=>'Vonage','infobip'=>'Infobip','custom'=>'Custom HTTP API'],
-        'whatsapp'  => ['360dialog'=>'360dialog','twilio'=>'Twilio','vonage'=>'Vonage','ultramsg'=>'UltraMsg','custom'=>'Custom HTTP API'],
-        'mail'      => ['smtp'=>'SMTP','mailgun'=>'Mailgun','ses'=>'Amazon SES','postmark'=>'Postmark'],
-    ],
     'mailer'      => ['smtp'=>'SMTP','mailgun'=>'Mailgun','ses'=>'Amazon SES','postmark'=>'Postmark'],
     'encryption'  => ['tls'=>'TLS','ssl'=>'SSL','none'=>'None'],
+    'gateway'     => [
+        'sms'      => ['africastalking'=>"Africa's Talking",'twilio'=>'Twilio','vonage'=>'Vonage','infobip'=>'Infobip','custom'=>'Custom HTTP API'],
+        'whatsapp' => ['360dialog'=>'360dialog','twilio'=>'Twilio','vonage'=>'Vonage','ultramsg'=>'UltraMsg','custom'=>'Custom HTTP API'],
+        'mail'     => ['smtp'=>'SMTP','mailgun'=>'Mailgun','ses'=>'Amazon SES','postmark'=>'Postmark'],
+    ],
 ];
 @endphp
 <div class="max-w-3xl">
@@ -39,6 +38,7 @@ $selects = [
             <div class="p-6 space-y-5">
                 @foreach($settings as $s)
                 <div class="{{ $s->type === 'toggle' ? 'flex items-center justify-between' : '' }}">
+
                     @if($s->type === 'toggle')
                         <div>
                             <p class="text-gray-700 font-semibold text-sm">{{ $s->label }}</p>
@@ -48,37 +48,57 @@ $selects = [
                             <input type="checkbox" name="{{ $s->key }}" value="1" {{ $s->value === '1' ? 'checked' : '' }} class="sr-only peer">
                             <div class="w-11 h-6 bg-gray-200 peer-focus:ring-2 peer-focus:ring-orange-400 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-orange-500"></div>
                         </label>
+
                     @elseif($s->type === 'textarea')
                         <label class="block text-xs font-semibold text-gray-600 mb-1">{{ $s->label }}</label>
                         @if($s->description)<p class="text-gray-400 text-xs mb-1">{{ $s->description }}</p>@endif
                         <textarea name="{{ $s->key }}" rows="3" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-orange-400 focus:outline-none">{{ old($s->key, $s->value) }}</textarea>
+
                     @elseif($s->type === 'select')
                         <label class="block text-xs font-semibold text-gray-600 mb-1">{{ $s->label }}</label>
                         @if($s->description)<p class="text-gray-400 text-xs mb-1">{{ $s->description }}</p>@endif
-                        @php $opts = $selects[$s->key] ?? ($selects['gateway'][$group] ?? []); @endphp
+                        @php
+                            // Resolve options — avoid variable name collision with blade's $label
+                            if (isset($selectOptions[$s->key]) && !is_array(reset($selectOptions[$s->key]))) {
+                                $opts = $selectOptions[$s->key];
+                            } elseif ($s->key === 'gateway' && isset($selectOptions['gateway'][$group])) {
+                                $opts = $selectOptions['gateway'][$group];
+                            } else {
+                                $opts = [];
+                            }
+                        @endphp
                         <select name="{{ $s->key }}" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-orange-400 focus:outline-none">
-                            @foreach($opts as $val => $label)
-                            <option value="{{ $val }}" {{ old($s->key,$s->value) === $val ? 'selected' : '' }}>{{ $label }}</option>
+                            @foreach($opts as $optVal => $optLabel)
+                            <option value="{{ $optVal }}" {{ old($s->key, $s->value) === $optVal ? 'selected' : '' }}>{{ $optLabel }}</option>
                             @endforeach
                         </select>
+
                     @elseif($s->type === 'password')
-                        <label class="block text-xs font-semibold text-gray-600 mb-1">{{ $s->label }} @if($s->is_secret)<i class="fas fa-lock text-gray-400 ml-1"></i>@endif</label>
+                        <label class="block text-xs font-semibold text-gray-600 mb-1">
+                            {{ $s->label }}
+                            @if($s->is_secret)<i class="fas fa-lock text-gray-400 ml-1"></i>@endif
+                        </label>
                         @if($s->description)<p class="text-gray-400 text-xs mb-1">{{ $s->description }}</p>@endif
-                        <input type="password" name="{{ $s->key }}" placeholder="{{ $s->value ? '●●●●●●●● (saved)' : 'Enter ' . $s->label }}" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm font-mono focus:ring-2 focus:ring-orange-400 focus:outline-none">
-                        <p class="text-gray-400 text-xs mt-1"><i class="fas fa-info-circle"></i> Leave blank to keep existing value</p>
+                        <input type="password" name="{{ $s->key }}"
+                            placeholder="{{ $s->value ? '●●●●●●●● (saved — leave blank to keep)' : 'Enter ' . $s->label }}"
+                            class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm font-mono focus:ring-2 focus:ring-orange-400 focus:outline-none">
+                        <p class="text-gray-400 text-xs mt-1"><i class="fas fa-info-circle"></i> Leave blank to keep the existing value</p>
+
                     @else
                         <label class="block text-xs font-semibold text-gray-600 mb-1">{{ $s->label }}</label>
                         @if($s->description)<p class="text-gray-400 text-xs mb-1">{{ $s->description }}</p>@endif
-                        <input type="text" name="{{ $s->key }}" value="{{ old($s->key, $s->value) }}" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-orange-400 focus:outline-none">
+                        <input type="text" name="{{ $s->key }}" value="{{ old($s->key, $s->value) }}"
+                            class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-orange-400 focus:outline-none">
                     @endif
+
                 </div>
-                @if(!$loop->last && $settings[$loop->index]->sort_order !== $settings[$loop->index+1]->sort_order ?? false)
-                <hr class="border-gray-100">
-                @endif
+                @if(!$loop->last)<hr class="border-gray-100">@endif
                 @endforeach
             </div>
             <div class="px-6 py-4 bg-gray-50 border-t border-gray-100 flex justify-between items-center">
-                <a href="{{ route('admin.settings.index') }}" class="text-gray-500 hover:text-gray-700 text-sm"><i class="fas fa-arrow-left mr-1"></i>Back</a>
+                <a href="{{ route('admin.settings.index') }}" class="text-gray-500 hover:text-gray-700 text-sm">
+                    <i class="fas fa-arrow-left mr-1"></i>Back to Settings
+                </a>
                 <button type="submit" class="text-white px-6 py-2.5 rounded-xl font-semibold text-sm" style="background:linear-gradient(90deg,#f97316,#ea580c)">
                     <i class="fas fa-save mr-1"></i>Save {{ ucfirst($group) }} Settings
                 </button>
@@ -91,8 +111,11 @@ $selects = [
         <h3 class="text-gray-800 font-bold text-sm mb-3"><i class="fas fa-paper-plane text-orange-500 mr-2"></i>Send Test Email</h3>
         <form action="{{ route('admin.settings.test_mail') }}" method="POST" class="flex space-x-3">
             @csrf
-            <input type="email" name="to" placeholder="test@example.com" class="flex-1 border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-orange-400 focus:outline-none" required>
-            <button type="submit" class="bg-purple-600 text-white px-5 py-2.5 rounded-lg text-sm font-semibold hover:bg-purple-700"><i class="fas fa-send mr-1"></i>Send Test</button>
+            <input type="email" name="to" placeholder="test@example.com"
+                class="flex-1 border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-orange-400 focus:outline-none" required>
+            <button type="submit" class="bg-purple-600 text-white px-5 py-2.5 rounded-lg text-sm font-semibold hover:bg-purple-700">
+                <i class="fas fa-paper-plane mr-1"></i>Send Test
+            </button>
         </form>
     </div>
     @endif

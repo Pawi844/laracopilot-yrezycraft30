@@ -2,77 +2,90 @@
 namespace App\Http\Controllers\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\Router;
-use App\Models\Nas;
 use App\Models\Reseller;
+use App\Services\MikrotikService;
 use Illuminate\Http\Request;
 
 class RouterController extends Controller {
-    private function auth() { if (!session('admin_logged_in')) return redirect()->route('admin.login'); }
+    private function auth() { if (!session('admin_logged_in')) return redirect()->route('admin.login'); return null; }
 
-    public function index() {
-        $this->auth();
-        $routers = Router::with(['nas','reseller'])->orderBy('created_at','desc')->paginate(20);
+    public function index(Request $req) {
+        if ($r = $this->auth()) return $r;
+        $routers = Router::with('reseller')->latest()->paginate(20);
         return view('admin.routers.index', compact('routers'));
     }
 
     public function create() {
-        $this->auth();
-        $nas = Nas::where('status','active')->get();
+        if ($r = $this->auth()) return $r;
         $resellers = Reseller::where('status','active')->get();
-        return view('admin.routers.create', compact('nas','resellers'));
+        return view('admin.routers.create', compact('resellers'));
     }
 
-    public function store(Request $request) {
-        $this->auth();
-        $validated = $request->validate([
-            'name' => 'required|string|max:255',
-            'ip_address' => 'required|string|max:50',
-            'api_port' => 'required|integer',
-            'username' => 'required|string|max:100',
-            'password' => 'required|string',
-            'model' => 'nullable|string|max:100',
-            'nas_id' => 'nullable|exists:nas,id',
-            'reseller_id' => 'nullable|exists:resellers,id'
+    public function store(Request $req) {
+        if ($r = $this->auth()) return $r;
+        $v = $req->validate([
+            'name'         => 'required|max:100',
+            'ip_address'   => 'required|max:100',
+            'api_port'     => 'nullable|integer',
+            'api_username' => 'nullable|max:100',
+            'api_password' => 'nullable|max:100',
+            'use_ovpn'     => 'nullable|boolean',
+            'ovpn_gateway' => 'nullable|max:50',
+            'ovpn_username'=> 'nullable|max:100',
+            'ovpn_password'=> 'nullable|max:100',
+            'reseller_id'  => 'nullable|exists:resellers,id',
         ]);
-        Router::create($validated);
-        return redirect()->route('admin.routers.index')->with('success', 'MikroTik router added!');
+        $v['use_ovpn'] = $req->has('use_ovpn');
+        Router::create($v);
+        return redirect()->route('admin.routers.index')->with('success','Router added!');
     }
 
     public function edit($id) {
-        $this->auth();
-        $router = Router::findOrFail($id);
-        $nas = Nas::where('status','active')->get();
+        if ($r = $this->auth()) return $r;
+        $router    = Router::findOrFail($id);
         $resellers = Reseller::where('status','active')->get();
-        return view('admin.routers.edit', compact('router','nas','resellers'));
+        return view('admin.routers.edit', compact('router','resellers'));
     }
 
-    public function update(Request $request, $id) {
-        $this->auth();
+    public function update(Request $req, $id) {
+        if ($r = $this->auth()) return $r;
         $router = Router::findOrFail($id);
-        $validated = $request->validate([
-            'name' => 'required|string|max:255',
-            'ip_address' => 'required|string|max:50',
-            'api_port' => 'required|integer',
-            'username' => 'required|string|max:100',
-            'nas_id' => 'nullable|exists:nas,id',
-            'reseller_id' => 'nullable|exists:resellers,id'
+        $v = $req->validate([
+            'name'         => 'required|max:100',
+            'ip_address'   => 'required|max:100',
+            'api_port'     => 'nullable|integer',
+            'api_username' => 'nullable|max:100',
+            'api_password' => 'nullable|max:100',
+            'use_ovpn'     => 'nullable|boolean',
+            'ovpn_gateway' => 'nullable|max:50',
+            'ovpn_username'=> 'nullable|max:100',
+            'ovpn_password'=> 'nullable|max:100',
         ]);
-        if ($request->filled('password')) $validated['password'] = $request->password;
-        $router->update($validated);
-        return redirect()->route('admin.routers.index')->with('success', 'Router updated!');
+        $v['use_ovpn'] = $req->has('use_ovpn');
+        $router->update($v);
+        return redirect()->route('admin.routers.index')->with('success','Router updated!');
     }
 
     public function destroy($id) {
-        $this->auth();
+        if ($r = $this->auth()) return $r;
         Router::findOrFail($id)->delete();
-        return redirect()->route('admin.routers.index')->with('success', 'Router deleted!');
+        return redirect()->route('admin.routers.index')->with('success','Router deleted.');
     }
 
     public function sync($id) {
-        $this->auth();
+        if ($r = $this->auth()) return $r;
         $router = Router::findOrFail($id);
-        // Simulate MikroTik API sync
-        $router->update(['last_sync' => now(), 'status' => 'online', 'firmware' => 'RouterOS 7.x']);
-        return back()->with('success', 'Router ' . $router->name . ' synced with MikroTik API.');
+        $ok = (new MikrotikService($router))->testConnection();
+        return back()->with($ok ? 'success' : 'error', $ok ? 'Connected to '.$router->name.' successfully!' : 'Cannot connect to '.$router->name.' — check IP/credentials/tunnel.');
+    }
+
+    public function downloadOvpnConfig($id) {
+        if ($r = $this->auth()) return $r;
+        $router = Router::findOrFail($id);
+        $config = (new MikrotikService)->generateOvpnConfig($router);
+        return response($config,200,[
+            'Content-Type'        => 'application/x-openvpn-profile',
+            'Content-Disposition' => 'attachment; filename="'.str_replace(' ','_',$router->name).'.ovpn"',
+        ]);
     }
 }

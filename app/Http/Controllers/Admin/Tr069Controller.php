@@ -3,119 +3,185 @@ namespace App\Http\Controllers\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\Tr069Device;
 use App\Models\IspClient;
-use App\Models\Reseller;
+use App\Models\FatNode;
+use App\Models\Router;
+use App\Models\SystemSetting;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 
 class Tr069Controller extends Controller {
-    private function auth() { if (!session('admin_logged_in')) return redirect()->route('admin.login'); }
+    private function auth() { if (!session('admin_logged_in')) return redirect()->route('admin.login'); return null; }
 
-    public function index() {
-        $this->auth();
-        $devices = Tr069Device::with(['client','reseller'])->orderBy('updated_at','desc')->paginate(25);
-        $online  = Tr069Device::where('onu_status','online')->count();
-        $offline = Tr069Device::where('onu_status','offline')->count();
-        $unknown = Tr069Device::where('onu_status','unknown')->count();
-        return view('admin.tr069.index', compact('devices','online','offline','unknown'));
+    public function index(Request $req) {
+        if ($r = $this->auth()) return $r;
+        $query = Tr069Device::with(['client','fatNode','router'])->latest();
+        if ($req->search) $query->where(function($q) use ($req) {
+            $q->where('serial_number','like','%'.$req->search.'%')
+              ->orWhere('mac_address','like','%'.$req->search.'%')
+              ->orWhereHas('client',fn($c)=>$c->where('username','like','%'.$req->search.'%'));
+        });
+        if ($req->status) $query->where('onu_status',$req->status);
+        $devices    = $query->paginate(20)->withQueryString();
+        $globalAcs  = SystemSetting::get('tr069','acs_url','');
+        return view('admin.tr069.index', compact('devices','globalAcs'));
     }
 
     public function create() {
-        $this->auth();
-        $clients   = IspClient::where('status','active')->orderBy('username')->get();
-        $resellers = Reseller::where('status','active')->get();
-        return view('admin.tr069.create', compact('clients','resellers'));
+        if ($r = $this->auth()) return $r;
+        $clients  = IspClient::select('id','first_name','last_name','username')->orderBy('username')->get();
+        $fatNodes = FatNode::orderBy('name')->get();
+        $routers  = Router::orderBy('name')->get();
+        $globalAcsUrl  = SystemSetting::get('tr069','acs_url',config('app.url').'/tr069/acs');
+        $globalAcsUser = SystemSetting::get('tr069','acs_username','acs_user');
+        return view('admin.tr069.create', compact('clients','fatNodes','routers','globalAcsUrl','globalAcsUser'));
     }
 
-    public function store(Request $request) {
-        $this->auth();
-        $validated = $request->validate([
-            'serial_number'   => 'required|unique:tr069_devices|string|max:100',
-            'manufacturer'    => 'nullable|string|max:100',
-            'model'           => 'nullable|string|max:100',
-            'firmware_version'=> 'nullable|string|max:50',
-            'hardware_version'=> 'nullable|string|max:50',
-            'software_version'=> 'nullable|string|max:50',
-            'ip_address'      => 'nullable|string|max:50',
-            'mac_address'     => 'nullable|string|max:30',
-            'oui'             => 'nullable|string|max:20',
-            'product_class'   => 'nullable|string|max:100',
-            'wlan_ssid'       => 'nullable|string|max:100',
-            'device_id'       => 'nullable|string|max:200',
-            'client_id'       => 'nullable|exists:clients,id',
-            'reseller_id'     => 'nullable|exists:resellers,id',
+    public function store(Request $req) {
+        if ($r = $this->auth()) return $r;
+        $v = $req->validate([
+            'serial_number'               => 'required|unique:tr069_devices|max:100',
+            'mac_address'                 => 'nullable|max:50',
+            'model'                       => 'nullable|max:100',
+            'client_id'                   => 'nullable|exists:clients,id',
+            'fat_node_id'                 => 'nullable|exists:fat_nodes,id',
+            'router_id'                   => 'nullable|exists:routers,id',
+            'acs_url'                     => 'nullable|max:500',
+            'acs_username'                => 'nullable|max:100',
+            'acs_password'                => 'nullable|max:100',
+            'connection_request_url'      => 'nullable|max:500',
+            'connection_request_username' => 'nullable|max:100',
+            'connection_request_password' => 'nullable|max:100',
+            'internet_username'           => 'nullable|max:100',
+            'internet_password'           => 'nullable|max:100',
+            'wlan_ssid'                   => 'nullable|max:32',
+            'wlan_password'               => 'nullable|max:64',
         ]);
-        Tr069Device::create($validated);
-        return redirect()->route('admin.tr069.index')->with('success', 'ONU device registered!');
+        if (empty($v['acs_url']))      $v['acs_url']      = SystemSetting::get('tr069','acs_url','');
+        if (empty($v['acs_username'])) $v['acs_username'] = SystemSetting::get('tr069','acs_username','');
+        if (empty($v['acs_password'])) $v['acs_password'] = SystemSetting::get('tr069','acs_password','');
+        // Auto-fill internet credentials from client if not provided
+        if (empty($v['internet_username']) && !empty($v['client_id'])) {
+            $c = IspClient::find($v['client_id']);
+            if ($c) $v['internet_username'] = $c->username;
+        }
+        Tr069Device::create($v);
+        return redirect()->route('admin.tr069.index')->with('success','ONU device registered!');
     }
 
     public function show($id) {
-        $this->auth();
-        $device = Tr069Device::with(['client','reseller'])->findOrFail($id);
-        return view('admin.tr069.show', compact('device'));
+        if ($r = $this->auth()) return $r;
+        $device = Tr069Device::with(['client','fatNode','router'])->findOrFail($id);
+        $globalAcsUrl = SystemSetting::get('tr069','acs_url',config('app.url').'/tr069/acs');
+        return view('admin.tr069.show', compact('device','globalAcsUrl'));
     }
 
     public function edit($id) {
-        $this->auth();
-        $device    = Tr069Device::findOrFail($id);
-        $clients   = IspClient::where('status','active')->orderBy('username')->get();
-        $resellers = Reseller::where('status','active')->get();
-        return view('admin.tr069.edit', compact('device','clients','resellers'));
+        if ($r = $this->auth()) return $r;
+        $device   = Tr069Device::findOrFail($id);
+        $clients  = IspClient::select('id','first_name','last_name','username')->orderBy('username')->get();
+        $fatNodes = FatNode::orderBy('name')->get();
+        $routers  = Router::orderBy('name')->get();
+        $globalAcsUrl  = SystemSetting::get('tr069','acs_url',config('app.url').'/tr069/acs');
+        $globalAcsUser = SystemSetting::get('tr069','acs_username','acs_user');
+        return view('admin.tr069.edit', compact('device','clients','fatNodes','routers','globalAcsUrl','globalAcsUser'));
     }
 
-    public function update(Request $request, $id) {
-        $this->auth();
-        $device    = Tr069Device::findOrFail($id);
-        $validated = $request->validate([
-            'manufacturer'    => 'nullable|string|max:100',
-            'model'           => 'nullable|string|max:100',
-            'firmware_version'=> 'nullable|string|max:50',
-            'hardware_version'=> 'nullable|string|max:50',
-            'software_version'=> 'nullable|string|max:50',
-            'ip_address'      => 'nullable|string|max:50',
-            'mac_address'     => 'nullable|string|max:30',
-            'oui'             => 'nullable|string|max:20',
-            'product_class'   => 'nullable|string|max:100',
-            'wlan_ssid'       => 'nullable|string|max:100',
-            'client_id'       => 'nullable|exists:clients,id',
-            'status'          => 'nullable|in:online,offline,unknown,error',
-            'onu_status'      => 'nullable|in:online,offline,unknown',
-            // Optical
-            'opt_temperature' => 'nullable|numeric',
-            'opt_voltage'     => 'nullable|numeric',
-            'opt_tx_power'    => 'nullable|numeric',
-            'opt_rx_power'    => 'nullable|numeric',
-            'opt_bias_current'=> 'nullable|numeric',
-            // WAN
-            'wan_external_ip' => 'nullable|string|max:50',
-            'wan_mac_address' => 'nullable|string|max:30',
+    public function update(Request $req, $id) {
+        if ($r = $this->auth()) return $r;
+        $device = Tr069Device::findOrFail($id);
+        $v = $req->validate([
+            'serial_number'               => 'required|max:100|unique:tr069_devices,serial_number,'.$id,
+            'mac_address'                 => 'nullable|max:50',
+            'model'                       => 'nullable|max:100',
+            'client_id'                   => 'nullable|exists:clients,id',
+            'fat_node_id'                 => 'nullable|exists:fat_nodes,id',
+            'acs_url'                     => 'nullable|max:500',
+            'acs_username'                => 'nullable|max:100',
+            'acs_password'                => 'nullable|max:100',
+            'connection_request_url'      => 'nullable|max:500',
+            'connection_request_username' => 'nullable|max:100',
+            'connection_request_password' => 'nullable|max:100',
+            'internet_username'           => 'nullable|max:100',
+            'internet_password'           => 'nullable|max:100',
+            'wlan_ssid'                   => 'nullable|max:32',
+            'wlan_password'               => 'nullable|max:64',
         ]);
-        $device->update($validated);
-        return redirect()->route('admin.tr069.show', $id)->with('success', 'Device updated!');
+        $device->update($v);
+        return redirect()->route('admin.tr069.show',$id)->with('success','Device updated!');
     }
 
     public function destroy($id) {
-        $this->auth();
+        if ($r = $this->auth()) return $r;
         Tr069Device::findOrFail($id)->delete();
-        return redirect()->route('admin.tr069.index')->with('success', 'Device removed!');
+        return redirect()->route('admin.tr069.index')->with('success','Device removed.');
     }
 
     public function reboot($id) {
-        $this->auth();
+        if ($r = $this->auth()) return $r;
         $device = Tr069Device::findOrFail($id);
-        // In production: trigger TR-069 reboot RPC via ACS
-        return back()->with('success', 'Reboot command sent to device ' . $device->serial_number . ' via TR-069 ACS.');
+        $this->acsCall($device,'reboot');
+        return back()->with('success','Reboot command sent to '.$device->serial_number);
     }
 
-    // Simulate an inform from ACS (for demo / manual update)
-    public function refreshFromAcs(Request $request, $id) {
-        $this->auth();
+    public function refreshFromAcs($id) {
+        if ($r = $this->auth()) return $r;
         $device = Tr069Device::findOrFail($id);
-        // Simulate pulling updated data from ACS
-        $device->update([
-            'last_inform'  => now(),
-            'last_update'  => now(),
-            'onu_status'   => 'online',
-            'status'       => 'online',
-        ]);
-        return back()->with('success', 'Device data refreshed from ACS.');
+        $this->acsCall($device,'refresh');
+        return back()->with('success','Refresh requested from ACS.');
+    }
+
+    public function pushInternetSettings($id) {
+        if ($r = $this->auth()) return $r;
+        $device = Tr069Device::with('client')->findOrFail($id);
+        $pushed = $this->acsCall($device,'set_internet');
+        return back()->with($pushed ? 'success' : 'error', $pushed ? 'Internet settings pushed to ONU!' : 'Failed — check ACS URL and connection.');
+    }
+
+    public function acsGuide() {
+        if ($r = $this->auth()) return $r;
+        return view('admin.tr069.acs-guide');
+    }
+
+    /**
+     * ACS Endpoint — ONUs call this URL on boot / periodic inform
+     * A full CWMP implementation requires a dedicated ACS server (GenieACS, FreeACS).
+     * This endpoint acknowledges the inform and logs the device.
+     */
+    public function acsEndpoint(Request $req) {
+        Log::info('[TR-069 ACS] Inform received', ['ip'=>$req->ip(),'body'=>substr($req->getContent(),0,500)]);
+        // Parse basic serial number from SOAP if possible
+        $body   = $req->getContent();
+        $serial = '';
+        if (preg_match('/<SerialNumber>(.*?)<\/SerialNumber>/', $body, $m)) $serial = $m[1];
+        if ($serial) {
+            $dev = Tr069Device::where('serial_number',$serial)->first();
+            if ($dev) $dev->update(['last_seen'=>now(),'onu_status'=>'online']);
+            else Tr069Device::create(['serial_number'=>$serial,'onu_status'=>'online','last_seen'=>now()]);
+        }
+        // Return CWMP InformResponse
+        return response(
+            '<?xml version="1.0" encoding="UTF-8"?><soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" xmlns:cwmp="urn:dslforum-org:cwmp-1-0"><soap:Body><cwmp:InformResponse><MaxEnvelopes>1</MaxEnvelopes></cwmp:InformResponse></soap:Body></soap:Envelope>',
+            200, ['Content-Type'=>'text/xml']
+        );
+    }
+
+    public function connectionRequest(Request $req) {
+        Log::info('[TR-069 CR]', $req->all());
+        return response()->json(['ok'=>true]);
+    }
+
+    private function acsCall(Tr069Device $device, string $action): bool {
+        $url  = $device->connection_request_url ?? SystemSetting::get('tr069','acs_url','');
+        $user = $device->connection_request_username ?? SystemSetting::get('tr069','acs_username','');
+        $pass = $device->connection_request_password ?? SystemSetting::get('tr069','acs_password','');
+        if (!$url) return false;
+        try {
+            $resp = Http::withBasicAuth($user,$pass)->timeout(8)->post($url,['action'=>$action,'serial'=>$device->serial_number]);
+            return $resp->successful();
+        } catch(\Exception $e) {
+            Log::warning('[TR-069] ACS call failed: '.$e->getMessage());
+            return false;
+        }
     }
 }
