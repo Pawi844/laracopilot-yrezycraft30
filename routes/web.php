@@ -16,6 +16,7 @@ use App\Http\Controllers\Admin\NotificationController;
 use App\Http\Controllers\Admin\ServiceController;
 use App\Http\Controllers\Admin\TransactionController;
 use App\Http\Controllers\Admin\SupportController;
+use App\Http\Controllers\Admin\MikrotikController;
 use App\Http\Controllers\PublicController;
 
 // Public
@@ -35,7 +36,7 @@ Route::post('/admin/logout', [AdminAuthController::class, 'logout'])->name('admi
 // Dashboard
 Route::get('/admin/dashboard', [DashboardController::class, 'index'])->name('admin.dashboard');
 
-// NAS Management
+// NAS
 Route::get('/admin/nas', [NasController::class, 'index'])->name('admin.nas.index');
 Route::get('/admin/nas/create', [NasController::class, 'create'])->name('admin.nas.create');
 Route::post('/admin/nas', [NasController::class, 'store'])->name('admin.nas.store');
@@ -72,12 +73,33 @@ Route::delete('/admin/clients/{id}', [ClientController::class, 'destroy'])->name
 Route::post('/admin/clients/{id}/disconnect', [ClientController::class, 'disconnect'])->name('admin.clients.disconnect');
 Route::post('/admin/clients/{id}/reconnect', [ClientController::class, 'reconnect'])->name('admin.clients.reconnect');
 
-// Live Sessions
+// Sessions
 Route::get('/admin/sessions', [SessionController::class, 'index'])->name('admin.sessions.index');
 Route::get('/admin/sessions/live', [SessionController::class, 'live'])->name('admin.sessions.live');
 Route::delete('/admin/sessions/{id}', [SessionController::class, 'destroy'])->name('admin.sessions.destroy');
 
-// Routers (MikroTik)
+// MikroTik Live Panel
+Route::get('/admin/mikrotik', [MikrotikController::class, 'selectRouter'])->name('admin.mikrotik.select');
+Route::get('/admin/mikrotik/setup-guide', [MikrotikController::class, 'setupGuide'])->name('admin.mikrotik.setup');
+Route::get('/admin/mikrotik/{routerId}/dashboard', [MikrotikController::class, 'dashboard'])->name('admin.mikrotik.dashboard');
+Route::get('/admin/mikrotik/{routerId}/interfaces', [MikrotikController::class, 'interfaces'])->name('admin.mikrotik.interfaces');
+Route::get('/admin/mikrotik/{routerId}/pppoe', [MikrotikController::class, 'pppoe'])->name('admin.mikrotik.pppoe');
+Route::post('/admin/mikrotik/{routerId}/pppoe/disconnect', [MikrotikController::class, 'disconnectPppoe'])->name('admin.mikrotik.pppoe.disconnect');
+Route::post('/admin/mikrotik/{routerId}/pppoe/add', [MikrotikController::class, 'addPppoeSecret'])->name('admin.mikrotik.pppoe.add');
+Route::post('/admin/mikrotik/{routerId}/pppoe/delete', [MikrotikController::class, 'deletePppoeSecret'])->name('admin.mikrotik.pppoe.delete');
+Route::get('/admin/mikrotik/{routerId}/hotspot', [MikrotikController::class, 'hotspot'])->name('admin.mikrotik.hotspot');
+Route::post('/admin/mikrotik/{routerId}/hotspot/disconnect', [MikrotikController::class, 'disconnectHotspot'])->name('admin.mikrotik.hotspot.disconnect');
+Route::get('/admin/mikrotik/{routerId}/ip-pools', [MikrotikController::class, 'ipPools'])->name('admin.mikrotik.ip_pools');
+Route::get('/admin/mikrotik/{routerId}/queues', [MikrotikController::class, 'queues'])->name('admin.mikrotik.queues');
+Route::get('/admin/mikrotik/{routerId}/firewall', [MikrotikController::class, 'firewall'])->name('admin.mikrotik.firewall');
+Route::get('/admin/mikrotik/{routerId}/dhcp', [MikrotikController::class, 'dhcp'])->name('admin.mikrotik.dhcp');
+Route::get('/admin/mikrotik/{routerId}/routes', [MikrotikController::class, 'routes'])->name('admin.mikrotik.routes');
+Route::get('/admin/mikrotik/{routerId}/wireless', [MikrotikController::class, 'wireless'])->name('admin.mikrotik.wireless');
+Route::get('/admin/mikrotik/{routerId}/radius', [MikrotikController::class, 'radius'])->name('admin.mikrotik.radius');
+Route::post('/admin/mikrotik/{routerId}/radius/push', [MikrotikController::class, 'pushRadiusConfig'])->name('admin.mikrotik.radius.push');
+Route::post('/admin/mikrotik/{routerId}/sync-users', [MikrotikController::class, 'syncUsers'])->name('admin.mikrotik.sync');
+
+// Routers
 Route::get('/admin/routers', [RouterController::class, 'index'])->name('admin.routers.index');
 Route::get('/admin/routers/create', [RouterController::class, 'create'])->name('admin.routers.create');
 Route::post('/admin/routers', [RouterController::class, 'store'])->name('admin.routers.store');
@@ -104,7 +126,7 @@ Route::get('/admin/operators/{id}/edit', [OperatorController::class, 'edit'])->n
 Route::put('/admin/operators/{id}', [OperatorController::class, 'update'])->name('admin.operators.update');
 Route::delete('/admin/operators/{id}', [OperatorController::class, 'destroy'])->name('admin.operators.destroy');
 
-// Resellers (Multi-tenancy)
+// Resellers
 Route::get('/admin/resellers', [ResellerController::class, 'index'])->name('admin.resellers.index');
 Route::get('/admin/resellers/create', [ResellerController::class, 'create'])->name('admin.resellers.create');
 Route::post('/admin/resellers', [ResellerController::class, 'store'])->name('admin.resellers.store');
@@ -120,7 +142,7 @@ Route::post('/admin/notifications/whatsapp', [NotificationController::class, 'se
 Route::post('/admin/notifications/email', [NotificationController::class, 'sendEmail'])->name('admin.notifications.email');
 Route::post('/admin/notifications/broadcast', [NotificationController::class, 'broadcast'])->name('admin.notifications.broadcast');
 
-// Services & Support
+// Services
 Route::get('/admin/services', [ServiceController::class, 'index'])->name('admin.services.index');
 Route::get('/admin/services/create', [ServiceController::class, 'create'])->name('admin.services.create');
 Route::post('/admin/services', [ServiceController::class, 'store'])->name('admin.services.store');
@@ -128,11 +150,13 @@ Route::get('/admin/services/{id}/edit', [ServiceController::class, 'edit'])->nam
 Route::put('/admin/services/{id}', [ServiceController::class, 'update'])->name('admin.services.update');
 Route::delete('/admin/services/{id}', [ServiceController::class, 'destroy'])->name('admin.services.destroy');
 
+// Transactions
 Route::get('/admin/transactions', [TransactionController::class, 'index'])->name('admin.transactions.index');
 Route::get('/admin/transactions/create', [TransactionController::class, 'create'])->name('admin.transactions.create');
 Route::post('/admin/transactions', [TransactionController::class, 'store'])->name('admin.transactions.store');
 Route::get('/admin/transactions/{id}', [TransactionController::class, 'show'])->name('admin.transactions.show');
 
+// Support
 Route::get('/admin/support', [SupportController::class, 'index'])->name('admin.support.index');
 Route::get('/admin/support/{id}', [SupportController::class, 'show'])->name('admin.support.show');
 Route::put('/admin/support/{id}', [SupportController::class, 'update'])->name('admin.support.update');
