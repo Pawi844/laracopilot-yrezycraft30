@@ -17,6 +17,8 @@ use App\Http\Controllers\Admin\ServiceController;
 use App\Http\Controllers\Admin\TransactionController;
 use App\Http\Controllers\Admin\SupportController;
 use App\Http\Controllers\Admin\MikrotikController;
+use App\Http\Controllers\Admin\SettingsController;
+use App\Http\Controllers\Admin\ResellerSettingsController;
 use App\Http\Controllers\PublicController;
 
 // Public
@@ -46,21 +48,21 @@ Route::put('/admin/nas/{id}', [NasController::class, 'update'])->name('admin.nas
 Route::delete('/admin/nas/{id}', [NasController::class, 'destroy'])->name('admin.nas.destroy');
 Route::post('/admin/nas/{id}/test', [NasController::class, 'testConnection'])->name('admin.nas.test');
 
-// Hotspot Plans
-Route::get('/admin/hotspot', [HotspotController::class, 'index'])->name('admin.hotspot.index');
-Route::get('/admin/hotspot/create', [HotspotController::class, 'create'])->name('admin.hotspot.create');
-Route::post('/admin/hotspot', [HotspotController::class, 'store'])->name('admin.hotspot.store');
-Route::get('/admin/hotspot/{id}/edit', [HotspotController::class, 'edit'])->name('admin.hotspot.edit');
-Route::put('/admin/hotspot/{id}', [HotspotController::class, 'update'])->name('admin.hotspot.update');
-Route::delete('/admin/hotspot/{id}', [HotspotController::class, 'destroy'])->name('admin.hotspot.destroy');
-
-// PPPoE Plans
+// Plans
 Route::get('/admin/plans', [PlanController::class, 'index'])->name('admin.plans.index');
 Route::get('/admin/plans/create', [PlanController::class, 'create'])->name('admin.plans.create');
 Route::post('/admin/plans', [PlanController::class, 'store'])->name('admin.plans.store');
 Route::get('/admin/plans/{id}/edit', [PlanController::class, 'edit'])->name('admin.plans.edit');
 Route::put('/admin/plans/{id}', [PlanController::class, 'update'])->name('admin.plans.update');
 Route::delete('/admin/plans/{id}', [PlanController::class, 'destroy'])->name('admin.plans.destroy');
+
+// Hotspot
+Route::get('/admin/hotspot', [HotspotController::class, 'index'])->name('admin.hotspot.index');
+Route::get('/admin/hotspot/create', [HotspotController::class, 'create'])->name('admin.hotspot.create');
+Route::post('/admin/hotspot', [HotspotController::class, 'store'])->name('admin.hotspot.store');
+Route::get('/admin/hotspot/{id}/edit', [HotspotController::class, 'edit'])->name('admin.hotspot.edit');
+Route::put('/admin/hotspot/{id}', [HotspotController::class, 'update'])->name('admin.hotspot.update');
+Route::delete('/admin/hotspot/{id}', [HotspotController::class, 'destroy'])->name('admin.hotspot.destroy');
 
 // Clients
 Route::get('/admin/clients', [ClientController::class, 'index'])->name('admin.clients.index');
@@ -72,13 +74,27 @@ Route::put('/admin/clients/{id}', [ClientController::class, 'update'])->name('ad
 Route::delete('/admin/clients/{id}', [ClientController::class, 'destroy'])->name('admin.clients.destroy');
 Route::post('/admin/clients/{id}/disconnect', [ClientController::class, 'disconnect'])->name('admin.clients.disconnect');
 Route::post('/admin/clients/{id}/reconnect', [ClientController::class, 'reconnect'])->name('admin.clients.reconnect');
+Route::get('/admin/clients/{id}/traffic', [ClientController::class, 'trafficData'])->name('admin.clients.traffic');
 
 // Sessions
 Route::get('/admin/sessions', [SessionController::class, 'index'])->name('admin.sessions.index');
 Route::get('/admin/sessions/live', [SessionController::class, 'live'])->name('admin.sessions.live');
 Route::delete('/admin/sessions/{id}', [SessionController::class, 'destroy'])->name('admin.sessions.destroy');
 
-// MikroTik Live Panel
+// ─── System Settings ──────────────────────────────────────────────────
+Route::get('/admin/settings', [SettingsController::class, 'index'])->name('admin.settings.index');
+Route::get('/admin/settings/{group}', [SettingsController::class, 'group'])->name('admin.settings.group');
+Route::put('/admin/settings/{group}', [SettingsController::class, 'updateGroup'])->name('admin.settings.update');
+Route::post('/admin/settings/mail/test', [SettingsController::class, 'testMail'])->name('admin.settings.test_mail');
+// Notification Templates
+Route::get('/admin/settings/templates', [SettingsController::class, 'templates'])->name('admin.settings.templates');
+Route::get('/admin/settings/templates/create', [SettingsController::class, 'createTemplate'])->name('admin.settings.templates.create');
+Route::post('/admin/settings/templates', [SettingsController::class, 'storeTemplate'])->name('admin.settings.templates.store');
+Route::get('/admin/settings/templates/{id}/edit', [SettingsController::class, 'editTemplate'])->name('admin.settings.templates.edit');
+Route::put('/admin/settings/templates/{id}', [SettingsController::class, 'updateTemplate'])->name('admin.settings.templates.update');
+Route::delete('/admin/settings/templates/{id}', [SettingsController::class, 'destroyTemplate'])->name('admin.settings.templates.destroy');
+
+// MikroTik
 Route::get('/admin/mikrotik', [MikrotikController::class, 'selectRouter'])->name('admin.mikrotik.select');
 Route::get('/admin/mikrotik/setup-guide', [MikrotikController::class, 'setupGuide'])->name('admin.mikrotik.setup');
 Route::get('/admin/mikrotik/{routerId}/dashboard', [MikrotikController::class, 'dashboard'])->name('admin.mikrotik.dashboard');
@@ -117,6 +133,7 @@ Route::get('/admin/tr069/{id}/edit', [Tr069Controller::class, 'edit'])->name('ad
 Route::put('/admin/tr069/{id}', [Tr069Controller::class, 'update'])->name('admin.tr069.update');
 Route::delete('/admin/tr069/{id}', [Tr069Controller::class, 'destroy'])->name('admin.tr069.destroy');
 Route::post('/admin/tr069/{id}/reboot', [Tr069Controller::class, 'reboot'])->name('admin.tr069.reboot');
+Route::post('/admin/tr069/{id}/refresh', [Tr069Controller::class, 'refreshFromAcs'])->name('admin.tr069.refresh');
 
 // Operators
 Route::get('/admin/operators', [OperatorController::class, 'index'])->name('admin.operators.index');
@@ -134,6 +151,12 @@ Route::get('/admin/resellers/{id}', [ResellerController::class, 'show'])->name('
 Route::get('/admin/resellers/{id}/edit', [ResellerController::class, 'edit'])->name('admin.resellers.edit');
 Route::put('/admin/resellers/{id}', [ResellerController::class, 'update'])->name('admin.resellers.update');
 Route::delete('/admin/resellers/{id}', [ResellerController::class, 'destroy'])->name('admin.resellers.destroy');
+// Reseller Settings & Templates
+Route::get('/admin/resellers/{id}/settings', [ResellerSettingsController::class, 'index'])->name('admin.resellers.settings');
+Route::put('/admin/resellers/{id}/settings', [ResellerSettingsController::class, 'update'])->name('admin.resellers.settings.update');
+Route::get('/admin/resellers/{id}/templates', [ResellerSettingsController::class, 'templates'])->name('admin.resellers.templates');
+Route::post('/admin/resellers/{id}/templates', [ResellerSettingsController::class, 'storeTemplate'])->name('admin.resellers.templates.store');
+Route::delete('/admin/resellers/{id}/templates/{tplId}', [ResellerSettingsController::class, 'destroyTemplate'])->name('admin.resellers.templates.destroy');
 
 // Notifications
 Route::get('/admin/notifications', [NotificationController::class, 'index'])->name('admin.notifications.index');

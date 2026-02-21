@@ -1,0 +1,47 @@
+@extends('layouts.admin')
+@section('title','Edit Template')
+@section('page-title','Edit Notification Template')
+@section('content')
+<div class="max-w-3xl">
+<div class="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+    <div class="px-5 py-4" style="background:linear-gradient(90deg,#1e3a5f,#0f2744)">
+        <h2 class="text-white font-black">{{ $events[$template->event] ?? $template->event }}</h2>
+        <p class="text-blue-200 text-xs capitalize">{{ $template->channel }} template</p>
+    </div>
+    <form action="{{ route('admin.settings.templates.update', $template->id) }}" method="POST" class="p-6 space-y-4">
+        @csrf @method('PUT')
+        <div class="grid grid-cols-2 gap-4">
+            <div><label class="block text-xs font-semibold text-gray-600 mb-1">Event</label>
+                <select name="event" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-orange-400 focus:outline-none">
+                    @foreach($events as $k=>$v)<option value="{{ $k }}" {{ $template->event===$k?'selected':'' }}>{{ $v }}</option>@endforeach
+                </select>
+            </div>
+            <div><label class="block text-xs font-semibold text-gray-600 mb-1">Channel</label>
+                <select name="channel" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-orange-400 focus:outline-none">
+                    @foreach(['sms'=>'SMS','email'=>'Email','whatsapp'=>'WhatsApp'] as $c=>$l)<option value="{{ $c }}" {{ $template->channel===$c?'selected':'' }}>{{ $l }}</option>@endforeach
+                </select>
+            </div>
+        </div>
+        @if($template->channel === 'email')
+        <div><label class="block text-xs font-semibold text-gray-600 mb-1">Email Subject</label>
+            <input type="text" name="subject" value="{{ old('subject',$template->subject) }}" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-orange-400 focus:outline-none">
+        </div>
+        @endif
+        <div><label class="block text-xs font-semibold text-gray-600 mb-1">Message Body</label>
+            <p class="text-gray-400 text-xs mb-1">Use variables: {{ implode(' ', $vars) }}</p>
+            <textarea name="body" rows="8" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm font-mono focus:ring-2 focus:ring-orange-400 focus:outline-none" required>{{ old('body',$template->body) }}</textarea>
+        </div>
+        <div class="flex items-center space-x-2">
+            <label class="flex items-center space-x-2 cursor-pointer">
+                <input type="checkbox" name="active" value="1" {{ $template->active?'checked':'' }} class="rounded accent-orange-500">
+                <span class="text-gray-600 text-sm">Active (send automatically)</span>
+            </label>
+        </div>
+        <div class="flex justify-between pt-2">
+            <a href="{{ route('admin.settings.templates') }}" class="px-4 py-2.5 border border-gray-200 rounded-xl text-sm text-gray-600 hover:bg-gray-50">← Back</a>
+            <button type="submit" class="px-5 py-2.5 text-white rounded-xl text-sm font-semibold" style="background:linear-gradient(90deg,#f97316,#ea580c)"><i class="fas fa-save mr-1"></i>Save Template</button>
+        </div>
+    </form>
+</div>
+</div>
+@endsection

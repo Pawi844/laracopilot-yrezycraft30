@@ -2,126 +2,148 @@
 namespace App\Http\Controllers\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\IspClient;
-use App\Models\IspPlan;
+use App\Models\Plan;
 use App\Models\Nas;
 use App\Models\Router;
 use App\Models\Reseller;
+use App\Models\RadiusTrafficLog;
+use App\Models\RadiusSession;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Hash;
 
 class ClientController extends Controller {
-    private function auth() { if (!session('admin_logged_in')) return redirect()->route('admin.login'); }
+    private function authCheck() {
+        if (!session('admin_logged_in')) return redirect()->route('admin.login');
+        return null;
+    }
 
     public function index(Request $request) {
-        $this->auth();
-        $query = IspClient::with(['plan','nas','router','reseller']);
-        if ($request->status) $query->where('status', $request->status);
-        if ($request->type) $query->where('connection_type', $request->type);
+        if ($r = $this->authCheck()) return $r;
+        $query = IspClient::with(['plan','nas'])->latest();
         if ($request->search) {
-            $s = $request->search;
-            $query->where(fn($q) => $q->where('username','like',"%$s%")->orWhere('first_name','like',"%$s%")->orWhere('last_name','like',"%$s%")->orWhere('phone','like',"%$s%")->orWhere('email','like',"%$s%"));
+            $query->where(function($q) use ($request) {
+                $q->where('username','like','%'.$request->search.'%')
+                  ->orWhere('first_name','like','%'.$request->search.'%')
+                  ->orWhere('last_name','like','%'.$request->search.'%')
+                  ->orWhere('phone','like','%'.$request->search.'%');
+            });
         }
-        $clients = $query->orderBy('created_at','desc')->paginate(25);
+        if ($request->status)  $query->where('status',  $request->status);
+        if ($request->type)    $query->where('connection_type', $request->type);
+        $clients = $query->paginate(25)->withQueryString();
         return view('admin.clients.index', compact('clients'));
     }
 
     public function create() {
-        $this->auth();
-        $plans = IspPlan::where('active',true)->get();
-        $nas = Nas::where('status','active')->get();
-        $routers = Router::where('status','online')->get();
+        if ($r = $this->authCheck()) return $r;
+        $plans     = Plan::where('active',true)->orderBy('name')->get();
+        $nas       = Nas::where('status','active')->get();
+        $routers   = Router::orderBy('name')->get();
         $resellers = Reseller::where('status','active')->get();
         return view('admin.clients.create', compact('plans','nas','routers','resellers'));
     }
 
     public function store(Request $request) {
-        $this->auth();
-        $validated = $request->validate([
-            'username' => 'required|unique:clients|max:100',
-            'password' => 'required|min:4',
-            'first_name' => 'required|string|max:100',
-            'last_name' => 'required|string|max:100',
-            'email' => 'nullable|email',
-            'phone' => 'nullable|string|max:20',
-            'id_number' => 'nullable|string|max:30',
-            'address' => 'nullable|string',
-            'county' => 'nullable|string|max:100',
-            'plan_id' => 'nullable|exists:isp_plans,id',
-            'nas_id' => 'nullable|exists:nas,id',
-            'router_id' => 'nullable|exists:routers,id',
-            'reseller_id' => 'nullable|exists:resellers,id',
-            'static_ip' => 'nullable|string|max:50',
-            'mac_address' => 'nullable|string|max:20',
+        if ($r = $this->authCheck()) return $r;
+        $v = $request->validate([
+            'username'        => 'required|unique:clients|max:100',
+            'password'        => 'required|min:4',
+            'first_name'      => 'required|max:100',
+            'last_name'       => 'required|max:100',
+            'email'           => 'nullable|email',
+            'phone'           => 'nullable|max:20',
             'connection_type' => 'required|in:pppoe,hotspot,static',
-            'status' => 'required|in:active,inactive,suspended,expired',
-            'expiry_date' => 'nullable|date'
+            'status'          => 'required|in:active,pending,inactive,suspended',
+            'plan_id'         => 'nullable|exists:plans,id',
+            'nas_id'          => 'nullable|exists:nas,id',
+            'router_id'       => 'nullable|exists:routers,id',
+            'expiry_date'     => 'nullable|date',
         ]);
-        $validated['password'] = Hash::make($request->password);
-        $validated['notify_sms'] = $request->has('notify_sms');
-        $validated['notify_email'] = $request->has('notify_email');
-        $validated['notify_whatsapp'] = $request->has('notify_whatsapp');
-        IspClient::create($validated);
-        return redirect()->route('admin.clients.index')->with('success', 'Client created successfully!');
+        IspClient::create($v);
+        return redirect()->route('admin.clients.index')->with('success', 'Client created!');
     }
 
     public function show($id) {
-        $this->auth();
-        $client = IspClient::with(['plan','nas','router','reseller','sessions' => fn($q) => $q->orderBy('start_time','desc')->limit(20),'tr069Device','notificationLogs' => fn($q) => $q->orderBy('created_at','desc')->limit(10)])->findOrFail($id);
-        return view('admin.clients.show', compact('client'));
+        if ($r = $this->authCheck()) return $r;
+        $client = IspClient::with(['plan','nas','sessions','notificationLogs'])->findOrFail($id);
+        // Traffic graph data — last 30 polls
+        $graphData     = RadiusTrafficLog::forGraph($id, 30);
+        $currentSession = RadiusSession::where('username', $client->username)
+            ->where('status','active')->latest()->first();
+        $totalIn  = $client->sessions->sum('bytes_in');
+        $totalOut = $client->sessions->sum('bytes_out');
+        return view('admin.clients.show', compact('client','graphData','currentSession','totalIn','totalOut'));
     }
 
     public function edit($id) {
-        $this->auth();
-        $client = IspClient::findOrFail($id);
-        $plans = IspPlan::where('active',true)->get();
-        $nas = Nas::where('status','active')->get();
-        $routers = Router::all();
+        if ($r = $this->authCheck()) return $r;
+        $client    = IspClient::findOrFail($id);
+        $plans     = Plan::where('active',true)->orderBy('name')->get();
+        $nas       = Nas::where('status','active')->get();
+        $routers   = Router::orderBy('name')->get();
         $resellers = Reseller::where('status','active')->get();
         return view('admin.clients.edit', compact('client','plans','nas','routers','resellers'));
     }
 
     public function update(Request $request, $id) {
-        $this->auth();
+        if ($r = $this->authCheck()) return $r;
         $client = IspClient::findOrFail($id);
-        $validated = $request->validate([
-            'first_name' => 'required|string|max:100',
-            'last_name' => 'required|string|max:100',
-            'email' => 'nullable|email',
-            'phone' => 'nullable|string|max:20',
-            'plan_id' => 'nullable|exists:isp_plans,id',
-            'nas_id' => 'nullable|exists:nas,id',
-            'router_id' => 'nullable|exists:routers,id',
-            'static_ip' => 'nullable|string|max:50',
+        $v = $request->validate([
+            'first_name'      => 'required|max:100',
+            'last_name'       => 'required|max:100',
+            'email'           => 'nullable|email',
+            'phone'           => 'nullable|max:20',
             'connection_type' => 'required|in:pppoe,hotspot,static',
-            'status' => 'required|in:active,inactive,suspended,expired',
-            'expiry_date' => 'nullable|date'
+            'status'          => 'required',
+            'plan_id'         => 'nullable|exists:plans,id',
+            'nas_id'          => 'nullable|exists:nas,id',
+            'static_ip'       => 'nullable|ip',
+            'expiry_date'     => 'nullable|date',
+            'notify_sms'      => 'nullable',
+            'notify_email'    => 'nullable',
+            'notify_whatsapp' => 'nullable',
         ]);
-        if ($request->filled('password')) $validated['password'] = Hash::make($request->password);
-        $validated['notify_sms'] = $request->has('notify_sms');
-        $validated['notify_email'] = $request->has('notify_email');
-        $validated['notify_whatsapp'] = $request->has('notify_whatsapp');
-        $client->update($validated);
-        return redirect()->route('admin.clients.index')->with('success', 'Client updated!');
+        if ($request->filled('password')) $v['password'] = $request->password;
+        $v['notify_sms']      = $request->has('notify_sms')      ? 1 : 0;
+        $v['notify_email']    = $request->has('notify_email')    ? 1 : 0;
+        $v['notify_whatsapp'] = $request->has('notify_whatsapp') ? 1 : 0;
+        $client->update($v);
+        return redirect()->route('admin.clients.show', $id)->with('success', 'Client updated!');
     }
 
     public function destroy($id) {
-        $this->auth();
+        if ($r = $this->authCheck()) return $r;
         IspClient::findOrFail($id)->delete();
-        return redirect()->route('admin.clients.index')->with('success', 'Client deleted!');
+        return redirect()->route('admin.clients.index')->with('success', 'Client deleted.');
     }
 
     public function disconnect($id) {
-        $this->auth();
+        if ($r = $this->authCheck()) return $r;
         $client = IspClient::findOrFail($id);
-        // Mark active sessions as disconnected
-        $client->sessions()->where('status','active')->update(['status'=>'disconnect','stop_time'=>now()]);
-        return back()->with('success', 'Client ' . $client->username . ' disconnected from network.');
+        RadiusSession::where('username',$client->username)->where('status','active')->update(['status'=>'closed']);
+        return back()->with('success', $client->username . ' disconnected.');
     }
 
     public function reconnect($id) {
-        $this->auth();
+        if ($r = $this->authCheck()) return $r;
         $client = IspClient::findOrFail($id);
-        $client->update(['status' => 'active']);
-        return back()->with('success', 'Client ' . $client->username . ' reconnected.');
+        if ($client->status === 'suspended') $client->update(['status'=>'active']);
+        return back()->with('success', $client->username . ' account reactivated.');
+    }
+
+    // AJAX endpoint for live graph updates
+    public function trafficData($id) {
+        $client = IspClient::findOrFail($id);
+        $data   = RadiusTrafficLog::forGraph($id, 20);
+        $session = RadiusSession::where('username',$client->username)->where('status','active')->latest()->first();
+        return response()->json([
+            'graph'   => $data,
+            'session' => $session ? [
+                'bytes_in'      => $session->bytes_in ?? 0,
+                'bytes_out'     => $session->bytes_out ?? 0,
+                'session_time'  => $session->session_time ?? '-',
+                'framed_ip'     => $session->framed_ip ?? '-',
+                'status'        => $session->status ?? 'unknown',
+            ] : null,
+        ]);
     }
 }
