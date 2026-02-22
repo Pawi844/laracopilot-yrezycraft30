@@ -1,25 +1,27 @@
 <?php
 namespace App\Http\Controllers\Admin;
-
 use App\Http\Controllers\Controller;
 use App\Models\Router;
-use App\Models\MikrotikCache;
+use App\Models\IspClient;
+use App\Models\Nas;
 use App\Services\MikrotikService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 
 class MikrotikController extends Controller
 {
-    private function auth()
-    {
-        if (!session('admin_logged_in')) return redirect()->route('admin.login');
-        return null;
-    }
+    private function auth() { if (!session('admin_logged_in')) return redirect()->route('admin.login'); return null; }
 
     private function getService(Router $router): ?MikrotikService
     {
-        $svc = new MikrotikService($router);
-        if (!$svc->connect()) return null;
-        return $svc;
+        try {
+            $svc = new MikrotikService($router);
+            if (!$svc->connect()) return null;
+            return $svc;
+        } catch (\Throwable $e) {
+            Log::error('[MikrotikController] getService: '.$e->getMessage());
+            return null;
+        }
     }
 
     public function selectRouter()
@@ -35,205 +37,279 @@ class MikrotikController extends Controller
         return view('admin.mikrotik.setup_guide');
     }
 
-    public function dashboard(Request $request, $routerId)
+    public function dashboard($routerId)
     {
         if ($r = $this->auth()) return $r;
-        $router = Router::findOrFail($routerId);
-        $svc = $this->getService($router);
-        $connected = $svc !== null;
-        $resources = $identity = [];
-        $pppoeActive = $hotspotActive = $interfaces = $ipAddresses = [];
-        if ($svc) {
-            $resources     = $svc->getResources();
-            $identity      = $svc->getIdentity();
-            $pppoeActive   = $svc->getPppoeActive();
-            $hotspotActive = $svc->getHotspotActive();
-            $interfaces    = $svc->getInterfaces();
-            $ipAddresses   = $svc->getIpAddresses();
-            $router->update(['status' => 'online', 'last_sync' => now()]);
-            $svc->disconnect();
-        } else {
-            $router->update(['status' => 'offline']);
-        }
-        return view('admin.mikrotik.dashboard', compact(
-            'router','connected','resources','identity',
-            'pppoeActive','hotspotActive','interfaces','ipAddresses'
-        ));
-    }
+        $router  = Router::findOrFail($routerId);
+        $routers = Router::orderBy('name')->get();
+        $error   = null;
+        $sysRes  = [];
+        $ifaces  = [];
+        $ipAddrs = [];
+        $identity = $router->name;
 
-    public function interfaces($routerId)
-    {
-        if ($r = $this->auth()) return $r;
-        $router = Router::findOrFail($routerId);
         $svc = $this->getService($router);
-        $interfaces = $svc ? $svc->getInterfaces() : [];
-        $ipAddresses = $svc ? $svc->getIpAddresses() : [];
-        if ($svc) $svc->disconnect();
-        return view('admin.mikrotik.interfaces', compact('router','interfaces','ipAddresses'));
+        if ($svc) {
+            try {
+                $sysRes   = $svc->getSystemResource();
+                $ifaces   = $svc->getInterfaces();
+                $ipAddrs  = $svc->getIpAddresses();
+                $identity = $svc->getSystemIdentity();
+            } catch (\Throwable $e) {
+                $error = $e->getMessage();
+            } finally {
+                $svc->disconnect();
+            }
+        } else {
+            $error = 'Cannot connect to router. Check IP address, API port ('.(($router->api_port) ?? 8728).'), username/password, and ensure "/ip service enable api" is run on MikroTik.';
+            if ($router->use_ovpn) $error .= ' OpenVPN tunnel is enabled — verify the OVPN gateway ('.$router->ovpn_gateway.') is reachable.';
+        }
+
+        // Stats from DB as fallback
+        $dbStats = [
+            'total_clients' => IspClient::count(),
+            'active'        => IspClient::where('status','active')->count(),
+            'suspended'     => IspClient::where('status','suspended')->count(),
+        ];
+
+        return view('admin.mikrotik.dashboard', compact(
+            'router','routers','error','sysRes','ifaces','ipAddrs','identity','dbStats'
+        ));
     }
 
     public function pppoe($routerId)
     {
         if ($r = $this->auth()) return $r;
-        $router = Router::findOrFail($routerId);
-        $svc = $this->getService($router);
-        $active   = $svc ? $svc->getPppoeActive() : [];
-        $secrets  = $svc ? $svc->getPppoeSecrets() : [];
-        $profiles = $svc ? $svc->getPppoeProfiles() : [];
-        if ($svc) $svc->disconnect();
-        return view('admin.mikrotik.pppoe', compact('router','active','secrets','profiles'));
-    }
+        $router   = Router::findOrFail($routerId);
+        $routers  = Router::orderBy('name')->get();
+        $error    = null;
+        $active   = collect();
+        $secrets  = collect();
 
-    public function disconnectPppoe(Request $request, $routerId)
-    {
-        if ($r = $this->auth()) return $r;
-        $router = Router::findOrFail($routerId);
         $svc = $this->getService($router);
-        if ($svc) { $svc->disconnectPppoeUser($request->username); $svc->disconnect(); }
-        return back()->with('success', 'PPPoE user ' . $request->username . ' disconnected.');
-    }
-
-    public function addPppoeSecret(Request $request, $routerId)
-    {
-        if ($r = $this->auth()) return $r;
-        $request->validate(['name'=>'required','password'=>'required','profile'=>'nullable']);
-        $router = Router::findOrFail($routerId);
-        $svc = $this->getService($router);
-        $ok = false;
         if ($svc) {
-            $ok = $svc->addPppoeSecret($request->name, $request->password, $request->profile ?? 'default');
-            $svc->disconnect();
+            try {
+                $active  = collect($svc->getActiveConnections());
+                $secrets = collect($svc->getPppoeSecrets());
+            } catch (\Throwable $e) { $error = $e->getMessage(); }
+            finally { $svc->disconnect(); }
+        } else {
+            $error = 'Cannot connect to '.$router->name.' via API.';
         }
-        return back()->with($ok ? 'success' : 'error', $ok ? 'PPPoE secret added: '.$request->name : 'Failed to add secret.');
+
+        return view('admin.mikrotik.pppoe', compact('router','routers','active','secrets','error'));
     }
 
-    public function deletePppoeSecret(Request $request, $routerId)
+    public function disconnectPppoe(Request $req, $routerId)
     {
         if ($r = $this->auth()) return $r;
         $router = Router::findOrFail($routerId);
-        $svc = $this->getService($router);
-        $ok = false;
-        if ($svc) { $ok = $svc->removePppoeSecret($request->name); $svc->disconnect(); }
-        return back()->with($ok ? 'success' : 'error', $ok ? 'Secret removed.' : 'Failed.');
+        $svc    = $this->getService($router);
+        if ($svc) {
+            $svc->disconnectPppoe($req->id);
+            $svc->disconnect();
+            return back()->with('success','PPPoE session disconnected.');
+        }
+        return back()->with('error','Cannot connect to router.');
+    }
+
+    public function addPppoeSecret(Request $req, $routerId)
+    {
+        if ($r = $this->auth()) return $r;
+        $req->validate(['name'=>'required','password'=>'required','profile'=>'nullable']);
+        $router = Router::findOrFail($routerId);
+        $svc    = $this->getService($router);
+        if ($svc) {
+            $ok = $svc->addPppoeSecret($req->name, $req->password, $req->profile ?? 'default');
+            $svc->disconnect();
+            return back()->with($ok ? 'success' : 'error', $ok ? 'PPPoE secret added!' : 'Failed to add secret.');
+        }
+        return back()->with('error','Cannot connect to router.');
+    }
+
+    public function deletePppoeSecret(Request $req, $routerId)
+    {
+        if ($r = $this->auth()) return $r;
+        $router = Router::findOrFail($routerId);
+        $svc    = $this->getService($router);
+        if ($svc) {
+            $svc->deletePppoeSecret($req->id);
+            $svc->disconnect();
+            return back()->with('success','PPPoE secret deleted.');
+        }
+        return back()->with('error','Cannot connect to router.');
     }
 
     public function hotspot($routerId)
     {
         if ($r = $this->auth()) return $r;
-        $router = Router::findOrFail($routerId);
+        $router  = Router::findOrFail($routerId);
+        $routers = Router::orderBy('name')->get();
+        $error   = null;
+        $active  = collect();
+        $users   = collect();
+
         $svc = $this->getService($router);
-        $active   = $svc ? $svc->getHotspotActive() : [];
-        $users    = $svc ? $svc->getHotspotUsers() : [];
-        $profiles = $svc ? $svc->getHotspotProfiles() : [];
-        if ($svc) $svc->disconnect();
-        return view('admin.mikrotik.hotspot', compact('router','active','users','profiles'));
+        if ($svc) {
+            try {
+                $active = collect($svc->getHotspotActive());
+                $users  = collect($svc->getHotspotUsers());
+            } catch (\Throwable $e) { $error = $e->getMessage(); }
+            finally { $svc->disconnect(); }
+        } else {
+            $error = 'Cannot connect to '.$router->name.' via API.';
+        }
+
+        return view('admin.mikrotik.hotspot', compact('router','routers','active','users','error'));
     }
 
-    public function disconnectHotspot(Request $request, $routerId)
+    public function disconnectHotspot(Request $req, $routerId)
     {
         if ($r = $this->auth()) return $r;
         $router = Router::findOrFail($routerId);
-        $svc = $this->getService($router);
-        if ($svc) { $svc->disconnectHotspotUser($request->username); $svc->disconnect(); }
-        return back()->with('success', 'Hotspot user disconnected.');
-    }
-
-    public function ipPools($routerId)
-    {
-        if ($r = $this->auth()) return $r;
-        $router = Router::findOrFail($routerId);
-        $svc = $this->getService($router);
-        $pools = $svc ? $svc->getIpPools() : [];
-        if ($svc) $svc->disconnect();
-        return view('admin.mikrotik.ip_pools', compact('router','pools'));
+        $svc    = $this->getService($router);
+        if ($svc) {
+            $svc->disconnectHotspot($req->id);
+            $svc->disconnect();
+        }
+        return back()->with('success','Hotspot session disconnected.');
     }
 
     public function queues($routerId)
     {
         if ($r = $this->auth()) return $r;
-        $router = Router::findOrFail($routerId);
+        $router  = Router::findOrFail($routerId);
+        $routers = Router::orderBy('name')->get();
+        $queues  = collect();
+        $error   = null;
+
         $svc = $this->getService($router);
-        $simple = $svc ? $svc->getQueueSimple() : [];
-        $tree   = $svc ? $svc->getQueueTree() : [];
-        if ($svc) $svc->disconnect();
-        return view('admin.mikrotik.queues', compact('router','simple','tree'));
+        if ($svc) {
+            try { $queues = collect($svc->getQueues()); }
+            catch (\Throwable $e) { $error = $e->getMessage(); }
+            finally { $svc->disconnect(); }
+        } else {
+            $error = 'Cannot connect to '.$router->name.'.';
+        }
+        return view('admin.mikrotik.queues', compact('router','routers','queues','error'));
     }
 
     public function firewall($routerId)
     {
         if ($r = $this->auth()) return $r;
-        $router = Router::findOrFail($routerId);
+        $router  = Router::findOrFail($routerId);
+        $routers = Router::orderBy('name')->get();
+        $rules   = collect();
+        $error   = null;
+
         $svc = $this->getService($router);
-        $filter = $svc ? $svc->getFirewallFilter() : [];
-        $nat    = $svc ? $svc->getFirewallNat() : [];
-        $mangle = $svc ? $svc->getFirewallMangle() : [];
-        if ($svc) $svc->disconnect();
-        return view('admin.mikrotik.firewall', compact('router','filter','nat','mangle'));
+        if ($svc) {
+            try { $rules = collect($svc->getFirewallFilter()); }
+            catch (\Throwable $e) { $error = $e->getMessage(); }
+            finally { $svc->disconnect(); }
+        } else {
+            $error = 'Cannot connect to '.$router->name.'.';
+        }
+        return view('admin.mikrotik.firewall', compact('router','routers','rules','error'));
     }
 
     public function dhcp($routerId)
     {
         if ($r = $this->auth()) return $r;
-        $router = Router::findOrFail($routerId);
-        $svc = $this->getService($router);
-        $leases = $svc ? $svc->getDhcpLeases() : [];
-        $arp    = $svc ? $svc->getArpTable() : [];
-        if ($svc) $svc->disconnect();
-        return view('admin.mikrotik.dhcp', compact('router','leases','arp'));
-    }
+        $router  = Router::findOrFail($routerId);
+        $routers = Router::orderBy('name')->get();
+        $leases  = collect();
+        $error   = null;
 
-    public function routes($routerId)
-    {
-        if ($r = $this->auth()) return $r;
-        $router = Router::findOrFail($routerId);
         $svc = $this->getService($router);
-        $routes = $svc ? $svc->getRoutes() : [];
-        if ($svc) $svc->disconnect();
-        return view('admin.mikrotik.routes', compact('router','routes'));
+        if ($svc) {
+            try { $leases = collect($svc->getDhcpLeases()); }
+            catch (\Throwable $e) { $error = $e->getMessage(); }
+            finally { $svc->disconnect(); }
+        } else {
+            $error = 'Cannot connect to '.$router->name.'.';
+        }
+        return view('admin.mikrotik.dhcp', compact('router','routers','leases','error'));
     }
 
     public function wireless($routerId)
     {
         if ($r = $this->auth()) return $r;
-        $router = Router::findOrFail($routerId);
+        $router   = Router::findOrFail($routerId);
+        $routers  = Router::orderBy('name')->get();
+        $ifaces   = collect();
+        $clients  = collect();
+        $error    = null;
+
         $svc = $this->getService($router);
-        $wireless      = $svc ? $svc->getWireless() : [];
-        $registrations = $svc ? $svc->getWirelessRegistrations() : [];
-        if ($svc) $svc->disconnect();
-        return view('admin.mikrotik.wireless', compact('router','wireless','registrations'));
+        if ($svc) {
+            try {
+                $ifaces  = collect($svc->getWirelessInterfaces());
+                $clients = collect($svc->getWirelessClients());
+            } catch (\Throwable $e) { $error = $e->getMessage(); }
+            finally { $svc->disconnect(); }
+        } else {
+            $error = 'Cannot connect to '.$router->name.'.';
+        }
+        return view('admin.mikrotik.wireless', compact('router','routers','ifaces','clients','error'));
     }
 
     public function radius($routerId)
     {
         if ($r = $this->auth()) return $r;
-        $router = Router::findOrFail($routerId);
+        $router  = Router::findOrFail($routerId);
+        $routers = Router::orderBy('name')->get();
+        $servers = collect();
+        $error   = null;
+        $nasServers = Nas::orderBy('shortname')->get();
+
         $svc = $this->getService($router);
-        $radiusServers = $svc ? $svc->getRadiusServers() : [];
-        if ($svc) $svc->disconnect();
-        return view('admin.mikrotik.radius', compact('router','radiusServers'));
+        if ($svc) {
+            try { $servers = collect($svc->getRadiusServers()); }
+            catch (\Throwable $e) { $error = $e->getMessage(); }
+            finally { $svc->disconnect(); }
+        } else {
+            $error = 'Cannot connect to '.$router->name.'.';
+        }
+        return view('admin.mikrotik.radius', compact('router','routers','servers','error','nasServers'));
     }
 
-    public function pushRadiusConfig(Request $request, $routerId)
+    public function pushRadiusConfig(Request $req, $routerId)
     {
         if ($r = $this->auth()) return $r;
-        $request->validate(['nas_ip'=>'required','secret'=>'required']);
+        $req->validate(['radius_ip'=>'required','radius_secret'=>'required']);
         $router = Router::findOrFail($routerId);
-        $svc = $this->getService($router);
-        $ok = false;
+        $svc    = $this->getService($router);
         if ($svc) {
-            $ok = $svc->setRadiusConfig($request->nas_ip, $request->secret, $request->auth_port ?? '1812', $request->acct_port ?? '1813');
+            $ok = $svc->pushRadiusConfig($req->radius_ip, $req->radius_secret, (int)($req->radius_port ?? 1812));
             $svc->disconnect();
+            return back()->with($ok ? 'success' : 'error', $ok ? 'RADIUS config pushed to MikroTik!' : 'Failed to push RADIUS config.');
         }
-        return back()->with($ok ? 'success' : 'error', $ok ? 'RADIUS server pushed to MikroTik!' : 'Failed to push RADIUS config.');
+        return back()->with('error','Cannot connect to '.$router->name.'.');
     }
 
     public function syncUsers($routerId)
     {
         if ($r = $this->auth()) return $r;
-        $router = Router::findOrFail($routerId);
-        $svc = $this->getService($router);
-        $result = ['synced'=>0,'failed'=>0,'total'=>0];
-        if ($svc) { $result = $svc->syncRadiusUsers(); $svc->disconnect(); }
-        return back()->with('success', "Sync complete: {$result['synced']} synced, {$result['failed']} failed of {$result['total']} clients.");
+        $router  = Router::findOrFail($routerId);
+        $svc     = $this->getService($router);
+        $synced  = 0;
+        if ($svc) {
+            $secrets = $svc->getPppoeSecrets();
+            foreach ($secrets as $s) {
+                IspClient::updateOrCreate(
+                    ['username' => $s['name'] ?? ''],
+                    [
+                        'first_name'      => $s['name'] ?? 'Unknown',
+                        'last_name'       => '',
+                        'connection_type' => 'pppoe',
+                        'status'          => ($s['disabled'] ?? 'false') === 'false' ? 'active' : 'suspended',
+                    ]
+                );
+                $synced++;
+            }
+            $svc->disconnect();
+        }
+        return back()->with('success', $synced > 0 ? "Synced {$synced} PPPoE secrets from {$router->name}." : 'No secrets found or connection failed.');
     }
 }

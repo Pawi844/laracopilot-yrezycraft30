@@ -37,6 +37,10 @@ Route::get('/contact', [PublicController::class, 'contact'])->name('contact');
 Route::post('/contact', [PublicController::class, 'submitContact'])->name('contact.submit');
 Route::get('/coverage', [PublicController::class, 'coverage'])->name('coverage');
 
+// Hotspot captive portal (public — MikroTik redirects here)
+Route::get('/hotspot', [HotspotController::class, 'previewCaptive'])->name('hotspot.captive');
+Route::get('/hotspot/preview', [HotspotController::class, 'previewCaptive'])->name('admin.hotspot.captive.preview');
+
 // M-Pesa
 Route::post('/api/mpesa/callback', [MpesaController::class, 'callback'])->name('mpesa.callback');
 Route::post('/api/mpesa/validation', [MpesaController::class, 'validation']);
@@ -126,13 +130,15 @@ Route::delete('/admin/plans/{id}', [PlanController::class, 'destroy'])->name('ad
 
 // Hotspot
 Route::get('/admin/hotspot', [HotspotController::class, 'index'])->name('admin.hotspot.index');
+Route::get('/admin/hotspot/captive', [HotspotController::class, 'captivePage'])->name('admin.hotspot.captive');
+Route::post('/admin/hotspot/captive', [HotspotController::class, 'saveCaptive'])->name('admin.hotspot.captive.save');
 Route::get('/admin/hotspot/create', [HotspotController::class, 'create'])->name('admin.hotspot.create');
 Route::post('/admin/hotspot', [HotspotController::class, 'store'])->name('admin.hotspot.store');
 Route::get('/admin/hotspot/{id}/edit', [HotspotController::class, 'edit'])->name('admin.hotspot.edit');
 Route::put('/admin/hotspot/{id}', [HotspotController::class, 'update'])->name('admin.hotspot.update');
 Route::delete('/admin/hotspot/{id}', [HotspotController::class, 'destroy'])->name('admin.hotspot.destroy');
 
-// Sessions
+// Sessions (Live MikroTik)
 Route::get('/admin/sessions', [SessionController::class, 'index'])->name('admin.sessions.index');
 Route::get('/admin/sessions/live', [SessionController::class, 'live'])->name('admin.sessions.live');
 Route::delete('/admin/sessions/{id}', [SessionController::class, 'destroy'])->name('admin.sessions.destroy');
@@ -211,7 +217,7 @@ Route::post('/admin/tr069', [Tr069Controller::class, 'store'])->name('admin.tr06
 Route::get('/admin/tr069/{id}', [Tr069Controller::class, 'show'])->name('admin.tr069.show');
 Route::get('/admin/tr069/{id}/edit', [Tr069Controller::class, 'edit'])->name('admin.tr069.edit');
 Route::put('/admin/tr069/{id}', [Tr069Controller::class, 'update'])->name('admin.tr069.update');
-Route::delete('/admin/tr069/{id}', [Tr069Controller::class, 'destroy'])->name('admin.tr069.destroy');
+Route::delete('/admin/tr069/{id}', [Tr069Device::class, 'destroy'])->name('admin.tr069.destroy');
 Route::post('/admin/tr069/{id}/reboot', [Tr069Controller::class, 'reboot'])->name('admin.tr069.reboot');
 Route::post('/admin/tr069/{id}/refresh', [Tr069Controller::class, 'refreshFromAcs'])->name('admin.tr069.refresh');
 Route::post('/admin/tr069/{id}/push-internet', [Tr069Controller::class, 'pushInternetSettings'])->name('admin.tr069.push_internet');

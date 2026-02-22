@@ -1,80 +1,109 @@
 @extends('layouts.admin')
 @section('title','Edit Router')
-@section('page-title','Edit Router')
-@section('page-subtitle', $router->name)
+@section('page-title','Edit Router — '.$router->name)
+@section('page-subtitle','Update MikroTik connection details')
 @section('content')
 <div class="max-w-2xl">
-<form action="{{ route('admin.routers.update',$router->id) }}" method="POST" class="space-y-4">
+<form action="{{ route('admin.routers.update', $router->id) }}" method="POST" class="space-y-4">
     @csrf @method('PUT')
-    <!-- Basic -->
-    <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-5 sm:p-6">
-        <h3 class="text-gray-800 font-bold text-sm mb-4"><i class="fas fa-router text-orange-500 mr-2"></i>Router Details</h3>
+
+    <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-5 space-y-4">
+        <h3 class="text-gray-800 font-bold text-sm"><i class="fas fa-router text-orange-500 mr-2"></i>Router Details</h3>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div class="sm:col-span-2"><label class="block text-xs font-semibold text-gray-600 mb-1">Router Name *</label>
-                <input type="text" name="name" value="{{ old('name',$router->name) }}" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-orange-400 focus:outline-none" required>
+            <div class="sm:col-span-2">
+                <label class="block text-xs font-semibold text-gray-600 mb-1">Router Name *</label>
+                <input type="text" name="name" value="{{ old('name', $router->name) }}" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-orange-400 focus:outline-none @error('name') border-red-400 @enderror" required>
+                @error('name')<p class="text-red-500 text-xs mt-1">{{ $message }}</p>@enderror
             </div>
-            <div><label class="block text-xs font-semibold text-gray-600 mb-1">IP Address / Hostname *</label>
-                <input type="text" name="ip_address" value="{{ old('ip_address',$router->ip_address) }}" placeholder="41.80.x.x or router.domain.com" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm font-mono focus:ring-2 focus:ring-orange-400 focus:outline-none" required>
+            <div>
+                <label class="block text-xs font-semibold text-gray-600 mb-1">IP Address *</label>
+                <input type="text" name="ip_address" value="{{ old('ip_address', $router->ip_address) }}" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm font-mono focus:ring-2 focus:ring-orange-400 focus:outline-none" required>
             </div>
-            <div><label class="block text-xs font-semibold text-gray-600 mb-1">API Port</label>
-                <input type="number" name="api_port" value="{{ old('api_port',$router->api_port??8728) }}" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm font-mono focus:ring-2 focus:ring-orange-400 focus:outline-none">
+            <div>
+                <label class="block text-xs font-semibold text-gray-600 mb-1">API Port</label>
+                <input type="number" name="api_port" value="{{ old('api_port', $router->api_port ?? 8728) }}" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm font-mono focus:ring-2 focus:ring-orange-400 focus:outline-none">
             </div>
-            <div><label class="block text-xs font-semibold text-gray-600 mb-1">API Username</label>
-                <input type="text" name="api_username" value="{{ old('api_username',$router->api_username) }}" placeholder="admin" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-orange-400 focus:outline-none">
+            <div>
+                <label class="block text-xs font-semibold text-gray-600 mb-1">API Username *</label>
+                <input type="text" name="username" value="{{ old('username', $router->username) }}" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-orange-400 focus:outline-none @error('username') border-red-400 @enderror" required>
+                @error('username')<p class="text-red-500 text-xs mt-1">{{ $message }}</p>@enderror
             </div>
-            <div><label class="block text-xs font-semibold text-gray-600 mb-1">API Password</label>
-                <input type="password" name="api_password" placeholder="{{ $router->api_password ? '●●●●●●●●' : 'Enter password' }}" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-orange-400 focus:outline-none">
+            <div>
+                <label class="block text-xs font-semibold text-gray-600 mb-1">API Password <span class="font-normal text-gray-400">(leave blank to keep current)</span></label>
+                <input type="password" name="password" placeholder="Enter new password or leave blank" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-orange-400 focus:outline-none">
+            </div>
+            <div>
+                <label class="block text-xs font-semibold text-gray-600 mb-1">Model</label>
+                <input type="text" name="model" value="{{ old('model', $router->model ?? '') }}" placeholder="e.g. RB750Gr3" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-orange-400 focus:outline-none">
+            </div>
+        </div>
+    </div>
+
+    <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-5 space-y-4">
+        <h3 class="text-gray-800 font-bold text-sm"><i class="fas fa-server text-blue-500 mr-2"></i>Assignment</h3>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+                <label class="block text-xs font-semibold text-gray-600 mb-1">NAS Server</label>
+                <select name="nas_id" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-orange-400 focus:outline-none">
+                    <option value="">-- None --</option>
+                    @foreach($nas as $n)
+                    <option value="{{ $n->id }}" {{ old('nas_id',$router->nas_id)==$n->id?'selected':'' }}>{{ $n->shortname ?? $n->nasname ?? $n->name }}</option>
+                    @endforeach
+                </select>
             </div>
         </div>
     </div>
 
     <!-- OpenVPN -->
-    <div class="bg-white rounded-xl border border-orange-200 shadow-sm p-5 sm:p-6">
-        <div class="flex items-start justify-between mb-4">
-            <div>
-                <h3 class="text-gray-800 font-bold text-sm"><i class="fas fa-shield-alt text-orange-500 mr-2"></i>OpenVPN Tunnel</h3>
-                <p class="text-gray-400 text-xs mt-0.5">Use if this router does NOT have a public IP address</p>
-            </div>
-            <label class="relative inline-flex items-center cursor-pointer mt-1">
-                <input type="hidden" name="use_ovpn" value="0">
-                <input type="checkbox" name="use_ovpn" value="1" id="use_ovpn" {{ old('use_ovpn',$router->use_ovpn)?'checked':'' }} class="sr-only peer" onchange="toggleOvpn(this)">
-                <div class="w-10 h-5 bg-gray-200 peer-focus:ring-2 peer-focus:ring-orange-400 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-orange-500"></div>
+    <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-5 space-y-4">
+        <div class="flex items-center justify-between">
+            <h3 class="text-gray-800 font-bold text-sm"><i class="fas fa-shield-alt text-green-500 mr-2"></i>OpenVPN Tunnel</h3>
+            <label class="flex items-center cursor-pointer">
+                <div class="relative">
+                    <input type="checkbox" name="use_ovpn" id="use_ovpn" class="sr-only" {{ old('use_ovpn',$router->use_ovpn)?'checked':'' }} onchange="toggleOvpn(this.checked)">
+                    <div class="w-10 h-5 rounded-full shadow-inner" id="ovpn-track" style="background:{{ ($router->use_ovpn) ? '#f97316' : '#d1d5db' }}"></div>
+                    <div class="dot absolute w-4 h-4 bg-white rounded-full shadow top-0.5 transition-transform" id="ovpn-dot" style="left:2px;transform:{{ $router->use_ovpn ? 'translateX(20px)' : 'translateX(0)' }}"></div>
+                </div>
+                <span class="ml-2 text-xs text-gray-600 font-semibold">Enable OVPN</span>
             </label>
         </div>
-        <div id="ovpn-fields" class="space-y-3 {{ old('use_ovpn',$router->use_ovpn)?'':'hidden' }}">
-            <div class="bg-orange-50 border border-orange-100 rounded-lg p-3 text-xs text-orange-700 mb-3">
-                <i class="fas fa-info-circle mr-1"></i>Set the <strong>Tunnel IP</strong> to the private IP this router's OVPN client receives (e.g. 10.8.0.2). The system will use this IP for API calls instead of the public IP.
+        <div id="ovpn-fields" class="{{ old('use_ovpn',$router->use_ovpn) ? '' : 'hidden' }} grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div>
+                <label class="block text-xs font-semibold text-gray-600 mb-1">VPS / OVPN Gateway IP</label>
+                <input type="text" name="ovpn_gateway" value="{{ old('ovpn_gateway',$router->ovpn_gateway) }}" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm font-mono focus:ring-2 focus:ring-orange-400 focus:outline-none">
             </div>
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div><label class="block text-xs font-semibold text-gray-600 mb-1">OVPN Tunnel IP (e.g. 10.8.0.2)</label>
-                    <input type="text" name="ovpn_gateway" value="{{ old('ovpn_gateway',$router->ovpn_gateway) }}" placeholder="10.8.0.2" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm font-mono focus:ring-2 focus:ring-orange-400 focus:outline-none">
-                </div>
-                <div><label class="block text-xs font-semibold text-gray-600 mb-1">VPN Username</label>
-                    <input type="text" name="ovpn_username" value="{{ old('ovpn_username',$router->ovpn_username) }}" placeholder="router-01" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-orange-400 focus:outline-none">
-                </div>
-                <div><label class="block text-xs font-semibold text-gray-600 mb-1">VPN Password</label>
-                    <input type="password" name="ovpn_password" placeholder="{{ $router->ovpn_password ? '●●●●●●●●' : 'VPN password' }}" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-orange-400 focus:outline-none">
-                </div>
-                <div class="flex items-end">
-                    <a href="{{ route('admin.routers.ovpn_config',$router->id) }}" class="w-full text-center border border-orange-300 text-orange-600 px-3 py-2.5 rounded-lg text-sm font-semibold hover:bg-orange-50 transition-colors">
-                        <i class="fas fa-download mr-1"></i>Download .ovpn Config
-                    </a>
-                </div>
+            <div>
+                <label class="block text-xs font-semibold text-gray-600 mb-1">OVPN Username</label>
+                <input type="text" name="ovpn_username" value="{{ old('ovpn_username',$router->ovpn_username) }}" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-orange-400 focus:outline-none">
             </div>
-            <div class="bg-blue-50 border border-blue-200 rounded-lg p-3 text-xs">
-                <p class="text-blue-700 font-semibold mb-1">MikroTik OVPN Client Setup:</p>
-                <p class="text-blue-600 font-mono">/interface ovpn-client add name=ovpn-isp connect-to={{ \App\Models\SystemSetting::get('ovpn','server_ip','VPN_SERVER') }} port={{ \App\Models\SystemSetting::get('ovpn','server_port','1194') }} user={{ $router->ovpn_username ?: 'router-01' }} password=***</p>
+            <div>
+                <label class="block text-xs font-semibold text-gray-600 mb-1">OVPN Password</label>
+                <input type="password" name="ovpn_password" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-orange-400 focus:outline-none" placeholder="Leave blank to keep current">
             </div>
         </div>
     </div>
 
-    <div class="flex flex-col sm:flex-row justify-between gap-2">
-        <a href="{{ route('admin.routers.index') }}" class="text-center px-4 py-2.5 border border-gray-200 rounded-xl text-sm text-gray-600">← Cancel</a>
-        <button type="submit" class="px-6 py-2.5 text-white rounded-xl text-sm font-semibold" style="background:linear-gradient(90deg,#f97316,#ea580c)"><i class="fas fa-save mr-1"></i>Save Router</button>
+    <div class="flex justify-between">
+        <a href="{{ route('admin.routers.index') }}" class="px-4 py-2.5 border border-gray-200 rounded-xl text-sm text-gray-600 hover:bg-gray-50">← Back</a>
+        <div class="flex gap-2">
+            <form action="{{ route('admin.routers.sync', $router->id) }}" method="POST">
+                @csrf
+                <button type="submit" class="px-4 py-2.5 border border-green-200 text-green-700 rounded-xl text-sm font-semibold hover:bg-green-50">
+                    <i class="fas fa-plug mr-1"></i>Test Connection
+                </button>
+            </form>
+            <button type="submit" class="px-6 py-2.5 text-white rounded-xl text-sm font-semibold" style="background:linear-gradient(90deg,#f97316,#ea580c)">
+                <i class="fas fa-save mr-1"></i>Save Changes
+            </button>
+        </div>
     </div>
 </form>
 </div>
 <script>
-function toggleOvpn(cb) { document.getElementById('ovpn-fields').classList.toggle('hidden',!cb.checked); }
+function toggleOvpn(on) {
+    document.getElementById('ovpn-fields').classList.toggle('hidden', !on);
+    document.getElementById('ovpn-track').style.background = on ? '#f97316' : '#d1d5db';
+    document.getElementById('ovpn-dot').style.transform    = on ? 'translateX(20px)' : 'translateX(0)';
+}
 </script>
 @endsection
